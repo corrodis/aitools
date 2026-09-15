@@ -1,0 +1,7 @@
+# The live, private goose config/data/state/cache lives entirely outside
+# this repo, under /exp/mu2e/app/users/$USER/goose/ (see env.sh) -- never
+# inside the git checkout. This is a safety net in case a real config
+# ever ends up here by accident: only the sanitized *.example template
+# should be tracked.
+config.yaml
+secrets.yaml
