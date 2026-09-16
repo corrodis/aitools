@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
+
+# Version comes from the nearest git tag (setuptools_scm), not a hand-maintained
+# field here -- see ../../mcp/registry/pyproject.toml's comment for why.
+[tool.setuptools_scm]
+root = "../.."
+
+[project]
+name = "mu2e-slack-bot"
+dynamic = ["version"]
+description = "Slack frontend for a Mu2e AI agent: one thread is one conversation, MCP tools only, no system access"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "slack-sdk>=3.27.0",
+  "aiohttp>=3.9",
+  "openai>=1.40",
+  # 2.2 is where the client API this uses settled: streamable_http_client,
+  # float read timeouts, and headers supplied through an httpx2 client.
+  "mcp>=2.2.0",
+  "httpx2>=2.5.0",
+]
+
+[project.scripts]
+mu2e-slack-bot = "mu2e_slack.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+script-files = ["scripts/mu2e-slack-bot.sh", "scripts/mu2e-slack-bot-install-unit.sh"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.data-files]
+"share/mu2e-slack-bot" = ["config/mu2e-slack-bot.env.example"]

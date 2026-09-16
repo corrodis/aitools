@@ -1,0 +1,29 @@
+# Reference template only. `mu2e-slack-bot-install-unit.sh` (installed into the
+# venv's bin/) renders a fully resolved copy with real paths -- prefer that over
+# hand-editing this one.
+#
+# Install as a systemd --user unit:
+#   mkdir -p ~/.config/systemd/user
+#   cp mu2e-slack-bot.service.example ~/.config/systemd/user/mu2e-slack-bot.service
+#   $EDITOR ~/.config/systemd/user/mu2e-slack-bot.service    # fix the paths
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now mu2e-slack-bot
+#
+# Requires linger enabled for this account so the service survives logout:
+#   loginctl enable-linger        # or: sudo loginctl enable-linger <user>
+
+[Unit]
+Description=mu2e-slack-bot (Slack frontend for the Mu2e AI agent)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Tokens live here, mode 0600, outside any release so upgrades keep it.
+EnvironmentFile=__DEPLOY_ROOT__/mu2e-slack-bot.env
+ExecStart=__DEPLOY_ROOT__/current/.venv/bin/mu2e-slack-bot.sh --channel __CHANNEL__
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

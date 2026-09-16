@@ -1,0 +1,372 @@
+"""Slack adapter: Socket Mode in, threads out.
+
+Socket Mode (rather than an HTTP Request URL) because the host this runs on
+has no inbound path from Slack -- the bot dials out, like the mcp/* services
+do not have to.
+
+What the bot acts on, and nothing else:
+
+  * a message that @-mentions it, in any channel it has been invited to;
+  * a reply in a thread it is already part of, in its home channel only.
+
+The second rule is what makes a thread feel like a conversation instead of a
+sequence of @-prefixed commands. It does mean Slack delivers every message
+posted in the home channel to this process (the Events API has no per-thread
+subscription), so the filter below runs before anything else: a message that
+is neither a mention nor a reply in a tracked thread is dropped where it
+arrives -- never logged, never sent to the model. Run with
+--no-thread-followups to drop the message.channels subscription's usefulness
+entirely and require a mention every time.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import random
+import re
+import time
+
+from slack_sdk.errors import SlackApiError
+from slack_sdk.socket_mode.aiohttp import SocketModeClient
+from slack_sdk.socket_mode.request import SocketModeRequest
+from slack_sdk.socket_mode.response import SocketModeResponse
+from slack_sdk.web.async_client import AsyncWebClient
+
+from . import commands, usage_log
+from .agent import Conversation
+
+log = logging.getLogger(__name__)
+
+# Rotated at random purely so the channel does not feel like a cron job. All
+# standard Slack aliases -- a name this workspace does not have simply fails the
+# reactions.add call, which is already best-effort.
+WORKING_EMOJI = (
+    "eyes", "thinking_face", "mag", "microscope", "telescope", "brain",
+    "hourglass_flowing_sand", "stopwatch", "gear", "robot_face", "satellite",
+    "books", "bulb", "abacus", "atom_symbol", "zap",
+)
+
+MAX_MESSAGE_CHARS = 3500
+SEEN_TTL = 300  # seconds to remember an event id for de-duplication
+
+
+class SlackBot:
+    def __init__(self, cfg, llm, tools):
+        self.cfg = cfg
+        self.llm = llm
+        self.tools = tools
+        self.web = AsyncWebClient(token=cfg.slack_bot_token)
+        self.socket = SocketModeClient(app_token=cfg.slack_app_token, web_client=self.web)
+        self.bot_user_id: str = ""
+        self.workspace_url: str = ""
+        self.home_channel_id: str = ""
+        self.conversations: dict[str, Conversation] = {}
+        self._seen: dict[str, float] = {}
+
+    # -- lifecycle ------------------------------------------------------------
+
+    async def connect(self) -> None:
+        auth = await self.web.auth_test()
+        self.bot_user_id = auth["user_id"]
+        self.workspace_url = auth.get("url", "")
+        log.info("Authenticated as %s (%s)", auth.get("user"), self.bot_user_id)
+
+        if self.cfg.channel:
+            self.home_channel_id = await self._resolve_channel(self.cfg.channel)
+            log.info("Home channel: %s (%s)", self.cfg.channel, self.home_channel_id)
+        else:
+            log.info("No home channel configured -- mention-only in every channel")
+
+    async def start(self) -> None:
+        self.socket.socket_mode_request_listeners.append(self._on_request)
+        await self.socket.connect()
+        log.info("Connected to Slack (Socket Mode)")
+
+    async def close(self) -> None:
+        await self.socket.disconnect()
+        await self.socket.close()
+
+    async def _resolve_channel(self, channel: str) -> str:
+        if re.fullmatch(r"[CG][A-Z0-9]{8,}", channel):
+            return channel
+        cursor = None
+        while True:
+            resp = await self.web.conversations_list(
+                types="public_channel,private_channel", limit=200, cursor=cursor
+            )
+            for entry in resp["channels"]:
+                if entry["name"] == channel:
+                    return entry["id"]
+            cursor = resp.get("response_metadata", {}).get("next_cursor")
+            if not cursor:
+                raise RuntimeError(f"Channel not found (is the bot a member?): {channel}")
+
+    # -- event intake ---------------------------------------------------------
+
+    async def _on_request(self, client: SocketModeClient, req: SocketModeRequest) -> None:
+        # Acknowledge first, always: Slack retries anything unacked within
+        # 3 seconds, and an agent turn takes far longer than that.
+        await client.send_socket_mode_response(SocketModeResponse(envelope_id=req.envelope_id))
+
+        if req.type != "events_api":
+            return
+        event = (req.payload or {}).get("event") or {}
+        if event.get("type") not in ("app_mention", "message"):
+            return
+        # Bots (including this one) and edits/joins/deletions are not turns.
+        if event.get("bot_id") or event.get("subtype") or event.get("user") == self.bot_user_id:
+            return
+
+        channel = event.get("channel", "")
+        ts = event.get("ts", "")
+        text = event.get("text", "")
+        thread_ts = event.get("thread_ts") or ts
+        key = f"{channel}:{thread_ts}"
+        mentioned = f"<@{self.bot_user_id}>" in text
+
+        # Metadata only -- never the message text, which is why this can stay on
+        # at INFO. Without it there is no way to tell a missing subscription
+        # (event never arrives) from a rejected post (event handled, reply lost).
+        log.info("event type=%s channel=%s ts=%s thread=%s mentioned=%s",
+                 event.get("type"), channel, ts, thread_ts, mentioned)
+
+        if not self._should_handle(event, channel, mentioned, key):
+            log.info("  dropped: not addressed to me (known thread=%s, home=%s)",
+                     key in self.conversations, channel == self.home_channel_id)
+            return
+
+        # A mention in a channel arrives twice: once as app_mention, once as
+        # message. Whichever lands first wins.
+        if self._already_seen(f"{channel}:{ts}"):
+            return
+
+        clean = re.sub(rf"<@{self.bot_user_id}>", "", text).strip()
+        asyncio.create_task(self._respond(event, channel, thread_ts, key, clean))
+
+    def _should_handle(self, event: dict, channel: str, mentioned: bool, key: str) -> bool:
+        if mentioned:
+            return True
+        if event.get("type") != "message":
+            return False
+        if not self.cfg.thread_followups:
+            return False
+        # Only in the home channel, and only in a thread this process is
+        # already holding a conversation for.
+        return channel == self.home_channel_id and key in self.conversations
+
+    def _already_seen(self, event_key: str) -> bool:
+        now = time.monotonic()
+        for stale in [k for k, seen in self._seen.items() if now - seen > SEEN_TTL]:
+            del self._seen[stale]
+        if event_key in self._seen:
+            return True
+        self._seen[event_key] = now
+        return False
+
+    # -- turns ----------------------------------------------------------------
+
+    async def _respond(self, event: dict, channel: str, thread_ts: str, key: str, text: str) -> None:
+        user = event.get("user", "")
+        # Chosen once per turn and remembered, because the reaction has to be
+        # removed by the same name it was added with.
+        working = random.choice(WORKING_EMOJI)
+        try:
+            conv = self.conversations.get(key)
+            if conv is None:
+                conv = Conversation(key, self.cfg, self.llm, self.tools,
+                                    await self._context(channel, thread_ts, user))
+                self.conversations[key] = conv
+
+            # One turn at a time per thread: two quick messages must not
+            # interleave tool calls in the same message list.
+            async with conv.lock:
+                if commands.is_command(text, self.cfg.command_prefix):
+                    reply = await commands.dispatch(
+                        text, self.cfg.command_prefix,
+                        lambda args: commands.CommandContext(
+                            conv=conv, args=args, cfg=self.cfg,
+                            client=self.llm, tools=self.tools,
+                        ),
+                    )
+                    await self._post(channel, thread_ts, reply)
+                    return
+
+                await self._react(channel, event.get("ts", ""), working)
+                status = self._tool_notifier(conv, channel, thread_ts)
+                answer = await conv.ask(text, on_tool=status)
+                await status.finish()
+                await self._post(channel, thread_ts, answer)
+                usage_log.record_turn(conv, self.cfg, channel, thread_ts, user)
+        except Exception as exc:
+            log.exception("Turn failed in %s", key)
+            try:
+                await self._post(channel, thread_ts, f"Sorry, that went wrong: `{exc}`")
+            except Exception:
+                log.error("Could not deliver the error report either")
+        finally:
+            await self._react(channel, event.get("ts", ""), working, remove=True)
+
+    async def _context(self, channel: str, thread_ts: str, user: str) -> dict:
+        context = {"interface": "slack"}
+        try:
+            info = await self.web.users_info(user=user)
+            context["user_name"] = info["user"].get("real_name") or info["user"].get("name", "")
+        except Exception:
+            pass
+        try:
+            info = await self.web.conversations_info(channel=channel)
+            context["slack_channel"] = info["channel"].get("name", "")
+        except Exception:
+            pass
+        if self.workspace_url:
+            context["thread_url"] = f"{self.workspace_url}archives/{channel}/p{thread_ts.replace('.', '')}"
+        return context
+
+    def _tool_notifier(self, conv, channel: str, thread_ts: str) -> "_ToolStatus":
+        return _ToolStatus(self, conv, channel, thread_ts)
+
+    # -- posting --------------------------------------------------------------
+
+    async def _post(self, channel: str, thread_ts: str, text: str) -> None:
+        for chunk in _chunks(to_mrkdwn(text)):
+            try:
+                await self.web.chat_postMessage(channel=channel, thread_ts=thread_ts, text=chunk)
+            except SlackApiError as exc:
+                # Nearly always a scope or membership problem (missing_scope,
+                # not_in_channel, channel_not_found). Name it in the log: the
+                # turn already cost a model call, and silently dropping the
+                # answer looks identical to never having received the message.
+                log.error("chat_postMessage to %s failed: %s", channel,
+                          exc.response.get("error", exc))
+                raise
+
+    async def _react(self, channel: str, ts: str, emoji: str, remove: bool = False) -> None:
+        """Progress feedback. Best effort -- it needs the reactions:write scope,
+        and a missing reaction is not worth failing a turn over."""
+        if not ts:
+            return
+        try:
+            if remove:
+                await self.web.reactions_remove(channel=channel, timestamp=ts, name=emoji)
+            else:
+                await self.web.reactions_add(channel=channel, timestamp=ts, name=emoji)
+        except SlackApiError as exc:
+            log.debug("reaction %s on %s refused: %s", emoji, ts,
+                      exc.response.get("error", exc))
+
+    # -- housekeeping ---------------------------------------------------------
+
+    def cleanup(self) -> int:
+        """Forget conversations nobody has touched in a while. Their usage
+        records are already on disk, so this only frees memory."""
+        now = time.monotonic()
+        stale = [
+            key for key, conv in self.conversations.items()
+            if now - conv.last_active > self.cfg.idle_timeout and not conv.lock.locked()
+        ]
+        for key in stale:
+            del self.conversations[key]
+        if stale:
+            log.info("Dropped %d idle conversation(s)", len(stale))
+        return len(stale)
+
+
+class _ToolStatus:
+    """One status message per turn, edited in place as tools run.
+
+    A line per tool call buried the actual answer under eleven notifications in
+    the first real thread we tried. Slack lets a bot edit its own message, so
+    the thread keeps a single "working" line that updates, and ends as a one
+    line record of what was used.
+    """
+
+    def __init__(self, bot: "SlackBot", conv, channel: str, thread_ts: str):
+        self._bot = bot
+        self._conv = conv
+        self._channel = channel
+        self._thread_ts = thread_ts
+        self._ts: str | None = None
+        self._calls: list[str] = []
+
+    async def __call__(self, name: str, arguments: dict) -> None:
+        if not self._conv.tool_notifications:
+            return
+        detail = ", ".join(f"{k}={_short(v)}" for k, v in list(arguments.items())[:3])
+        self._calls.append(name)
+        line = f"_:wrench: `{name}`{f' ({detail})' if detail else ''}_"
+        await self._render(line)
+
+    async def finish(self) -> None:
+        """Collapse to a summary once the answer is ready."""
+        if self._ts is None or not self._calls:
+            return
+        counts: dict[str, int] = {}
+        for name in self._calls:
+            counts[name] = counts.get(name, 0) + 1
+        used = ", ".join(f"`{n}`" + (f" ×{c}" if c > 1 else "") for n, c in counts.items())
+        await self._render(f"_:wrench: used {used}_")
+
+    async def _render(self, text: str) -> None:
+        try:
+            if self._ts is None:
+                resp = await self._bot.web.chat_postMessage(
+                    channel=self._channel, thread_ts=self._thread_ts, text=text)
+                self._ts = resp["ts"]
+            else:
+                await self._bot.web.chat_update(
+                    channel=self._channel, ts=self._ts, text=text)
+        except SlackApiError as exc:
+            # Progress display is never worth failing a turn over.
+            log.debug("tool status update failed: %s", exc.response.get("error", exc))
+
+
+def _short(value) -> str:
+    text = value if isinstance(value, str) else json.dumps(value, default=str)
+    return text if len(text) <= 40 else text[:37] + "..."
+
+
+def _chunks(text: str) -> list[str]:
+    """Slack truncates long messages, so split on line boundaries instead."""
+    if len(text) <= MAX_MESSAGE_CHARS:
+        return [text or "(empty reply)"]
+
+    out, current = [], ""
+    for line in text.splitlines(keepends=True):
+        while len(line) > MAX_MESSAGE_CHARS:
+            out.append(line[:MAX_MESSAGE_CHARS])
+            line = line[MAX_MESSAGE_CHARS:]
+        if len(current) + len(line) > MAX_MESSAGE_CHARS:
+            out.append(current)
+            current = ""
+        current += line
+    if current:
+        out.append(current)
+    return out
+
+
+_BOLD = re.compile(r"\*\*(.+?)\*\*", re.S)
+_UNDERSCORE_BOLD = re.compile(r"__(.+?)__", re.S)
+_HEADER = re.compile(r"^#{1,6}\s+(.+)$", re.M)
+_LINK = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
+_BULLET = re.compile(r"^(\s*)[-*]\s+", re.M)
+
+
+def to_mrkdwn(text: str) -> str:
+    """Convert the markdown models emit into Slack's mrkdwn.
+
+    Slack has no headers or tables and uses single asterisks for bold, so an
+    unconverted answer renders as literal `**stars**` and `[text](url)` noise.
+    Fenced code blocks are passed through untouched.
+    """
+    parts = text.split("```")
+    for i in range(0, len(parts), 2):  # even indices are outside code fences
+        chunk = parts[i]
+        chunk = _HEADER.sub(r"*\1*", chunk)
+        chunk = _BOLD.sub(r"*\1*", chunk)
+        chunk = _UNDERSCORE_BOLD.sub(r"*\1*", chunk)
+        chunk = _LINK.sub(r"<\2|\1>", chunk)
+        chunk = _BULLET.sub(r"\1• ", chunk)
+        parts[i] = chunk
+    return "```".join(parts)
