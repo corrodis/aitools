@@ -136,3 +136,19 @@ goose-model() {
 mu2eai-model() {
   goose-model "$@"
 }
+
+# ---------------------------------------------------------------------------
+# Shared context injection via TOM (Top Of Mind) extension
+#
+# goose's TOM extension reads GOOSE_MOIM_MESSAGE_FILE and injects the
+# file's content at the top of every turn -- the same text Claude Code
+# picks up automatically via CLAUDE.md at $HOME.  One shared file,
+# two consumers.
+#
+# Only set if the file exists and TOM hasn't already been overridden.
+# ---------------------------------------------------------------------------
+_shared_context="$env_script_dir/../shared/mu2e.md"
+if [[ -f "$_shared_context" && -z "${GOOSE_MOIM_MESSAGE_FILE:-}" ]]; then
+  export GOOSE_MOIM_MESSAGE_FILE="$(cd "$(dirname "$_shared_context")" && pwd)/$(basename "$_shared_context")"
+fi
+unset _shared_context

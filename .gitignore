@@ -39,3 +39,5 @@
 
 # debug information files
 *.dwo
+harness/claude-code/__pycache__
+harness/claude-code/__pycache__/

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Checked before `set -euo pipefail` below -- see install.sh for why.
+# Checked before `set -euo pipefail` below -- see goose/install.sh for why.
 if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
   echo "Error: run this script, don't source it. Use: ./sync-mcp.sh" >&2
   return 1 2>/dev/null || exit 1
@@ -14,13 +14,9 @@ Usage:
 
 Fetches the MCP server registry (default:
 http://mu2eaigpvm01.fnal.gov:8000/registry) and upserts every server
-listed there into the LIVE, private goose config.yaml as a
-streamable_http extension. Never touches config.yaml.example (the
-tracked template) -- only the private file outside this repo.
-
-Existing entries for the same server name are overwritten; anything else
-already in config.yaml is left alone. Safe to re-run as the registry
-changes.
+listed there into Claude Code's ~/.claude.json as user-scope HTTP MCP
+servers. Existing entries are overwritten; anything else in ~/.claude.json
+is left unchanged. Safe to re-run as the registry changes.
 
 For servers whose registry entry has "token": "yes", the Authorization
 header is filled in from (in order):
@@ -28,8 +24,10 @@ header is filled in from (in order):
   2. /exp/mu2e/app/users/$USER/mikey_token, if that file exists (private,
      0600, shared between the goose and claude-code harnesses -- see
      mikey/README.md at the repo root for how to get a token)
-If neither is available, that server is still added, but disabled
-(enabled: false) rather than skipped silently or left half-configured.
+If neither is available, that server is added with a disabled marker
+rather than skipped or left half-configured.
+
+Requires env.sh to have been sourced (for CLAUDE_HOME).
 USAGE
   exit 2
 }
@@ -42,12 +40,15 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/env.sh"
 
 registry_url="${1:-http://mu2eaigpvm01.fnal.gov:8000/registry}"
-config_file="$XDG_CONFIG_HOME/goose/config.yaml"
+claude_json="$CLAUDE_HOME/.claude.json"
 token_file="/exp/mu2e/app/users/$USER/mikey_token"
 
-if [[ ! -f "$config_file" ]]; then
-  echo "Error: no live config.yaml yet at $config_file -- run setup.sh first" >&2
-  exit 1
+if [[ ! -f "$claude_json" ]]; then
+  # Create a minimal ~/.claude.json so sync_mcp_claude.py can update it.
+  # A real first-run creates this on first `claude` invocation, but sync
+  # may run before that.
+  ( umask 077 && printf '{}\n' > "$claude_json" )
+  echo "Created $claude_json (minimal skeleton)"
 fi
 
 if [[ -z "${MIKEY_TOKEN:-}" && -f "$token_file" ]]; then
@@ -57,7 +58,8 @@ export MIKEY_TOKEN="${MIKEY_TOKEN:-}"
 
 tmp_json="$(mktemp)"
 trap 'rm -f "$tmp_json"' EXIT
+
 echo "Fetching registry: $registry_url"
 curl -fsSL "$registry_url" -o "$tmp_json"
 
-python3 "$script_dir/sync_mcp.py" "$tmp_json" "$config_file"
+python3 "$script_dir/sync_mcp_claude.py" "$tmp_json" "$claude_json"
