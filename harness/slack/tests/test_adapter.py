@@ -109,6 +109,10 @@ def test_should_handle_rules():
         assert not bot._should_handle(msg, "CELSE", False, "CELSE:1")
         bot.cfg.thread_followups = False
         assert not bot._should_handle(msg, "CHOME", False, "CHOME:1")
+        # direct messages need no mention: top-level (new thread) and replies alike
+        assert bot._should_handle(msg, "D0123ABCD", False, "D0123ABCD:9")
+        bot.conversations["D0123ABCD:9"] = object()
+        assert bot._should_handle(msg, "D0123ABCD", False, "D0123ABCD:9")
     _run(case)
 
 

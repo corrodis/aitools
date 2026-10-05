@@ -17,9 +17,15 @@ into `<deploy-root>/releases/<ref>/.venv`, a `current` symlink, and a
   anywhere in this package. That is a property of what exists here, not a
   setting — see `mcp_tools.py`.
 - **Reads only what it is tagged in.** The bot acts on a message that
-  @-mentions it (in any channel it has been invited to), and on replies in a
-  thread it is already part of, in its home channel only. Anything else is
-  dropped at the adapter before it is logged or sent to the model.
+  @-mentions it (in any channel it has been invited to), on replies in a
+  thread it is already part of, in its home channel only, and on direct
+  messages (see below). Anything else is dropped at the adapter before it
+  is logged or sent to the model.
+- **Direct messages.** In a DM every message is for the bot: a top-level
+  message starts a thread, which is the conversation; replies in that
+  thread continue it. Needs the `im:history` scope and the `message.im`
+  event subscription (plus `im:read`/`im:write` if the app should be able
+  to open DMs itself).
 - **One thread, one conversation.** Thread state lives in memory and is
   dropped after `--idle-timeout`. The durable artifact is the usage record,
   not the transcript.
@@ -66,9 +72,10 @@ groups:history      groups:read       # only if the home channel is private
 ```
 
 Event subscriptions: `app_mention`, `message.channels` (plus
-`message.groups` for a private home channel). Subscribe to `message.*` only
+`message.groups` for a private home channel), and `message.im` with the
+`im:history` scope for direct messages. Subscribe to `message.*` only
 if you want thread follow-ups without a mention; with
-`--no-thread-followups`, `app_mention` alone is enough.
+`--no-thread-followups`, `app_mention` alone is enough (DMs still work).
 
 Then invite the bot to its channel: `/invite @mu2e-ai`.
 

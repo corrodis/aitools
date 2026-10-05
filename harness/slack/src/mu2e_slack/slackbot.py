@@ -7,7 +7,9 @@ do not have to.
 What the bot acts on, and nothing else:
 
   * a message that @-mentions it, in any channel it has been invited to;
-  * a reply in a thread it is already part of, in its home channel only.
+  * a reply in a thread it is already part of, in its home channel only;
+  * any message in a direct message with it -- a top-level DM starts a
+    thread, which is the conversation, and replies in it continue it.
 
 The second rule is what makes a thread feel like a conversation instead of a
 sequence of @-prefixed commands. It does mean Slack delivers every message
@@ -151,6 +153,11 @@ class SlackBot:
             return True
         if event.get("type") != "message":
             return False
+        # Direct messages: everything is addressed to the bot. A top-level DM
+        # starts a thread (the conversation); replies in it continue it. Needs
+        # the im:history scope and the message.im event subscription.
+        if _is_dm(channel):
+            return True
         if not self.cfg.thread_followups:
             return False
         # Only in the home channel, and only in a thread this process is
@@ -209,17 +216,18 @@ class SlackBot:
             await self._react(channel, event.get("ts", ""), working, remove=True)
 
     async def _context(self, channel: str, thread_ts: str, user: str) -> dict:
-        context = {"interface": "slack"}
+        context = {"interface": "slack", "is_dm": _is_dm(channel)}
         try:
             info = await self.web.users_info(user=user)
             context["user_name"] = info["user"].get("real_name") or info["user"].get("name", "")
         except Exception:
             pass
-        try:
-            info = await self.web.conversations_info(channel=channel)
-            context["slack_channel"] = info["channel"].get("name", "")
-        except Exception:
-            pass
+        if not context["is_dm"]:
+            try:
+                info = await self.web.conversations_info(channel=channel)
+                context["slack_channel"] = info["channel"].get("name", "")
+            except Exception:
+                pass
         if self.workspace_url:
             context["thread_url"] = f"{self.workspace_url}archives/{channel}/p{thread_ts.replace('.', '')}"
         return context
@@ -333,6 +341,12 @@ class _ToolStatus:
         except SlackApiError as exc:
             # Progress display is never worth failing a turn over.
             log.debug("tool status update failed: %s", exc.response.get("error", exc))
+
+
+def _is_dm(channel: str) -> bool:
+    """Slack direct-message channel ids start with D (group DMs are G/C and
+    behave like channels: a mention is needed there)."""
+    return channel.startswith("D")
 
 
 def _short(value) -> str:
