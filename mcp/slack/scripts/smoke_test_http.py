@@ -18,7 +18,7 @@ import httpx2
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-EXPECTED_TOOLS = {"get_server_info", "slack_list_channels", "slack_read_channel", "slack_read_thread"}
+EXPECTED_TOOLS = {"slack_server_info", "slack_list_channels", "slack_read_channel", "slack_read_thread"}
 
 
 async def check_mcp(base_url: str, token: str | None) -> None:
@@ -34,7 +34,7 @@ async def check_mcp(base_url: str, token: str | None) -> None:
                 print(f"tools: {sorted(tools)}")
                 if missing:
                     raise SystemExit(f"FAILED: missing tools {sorted(missing)}")
-                info = await session.call_tool("get_server_info", {})
+                info = await session.call_tool("slack_server_info", {})
                 print("server info:", info.content[0].text[:300])
                 chans = await session.call_tool("slack_list_channels", {})
                 print("channels:", chans.content[0].text[:300])

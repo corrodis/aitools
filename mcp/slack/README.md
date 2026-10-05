@@ -25,7 +25,7 @@ as a subprocess, like it does with `ecl-mcp-stdio` and `dcs-mcp-stdio`.
 
 | Tool | Returns |
 |---|---|
-| `get_server_info()` | version, allowlist, limits, auth mode |
+| `slack_server_info()` | version, allowlist, limits, auth mode (prefixed so clients merging several servers' tools, like daqpy, see no duplicate name) |
 | `slack_list_channels(refresh=False)` | the allowlisted channels: id, name, private?, topic, purpose, members |
 | `slack_read_channel(channel, since="24h", until=None, limit=100, include_threads=False)` | messages oldest-first: ISO time, author name, text with `@mentions`/links resolved, permalink, reply_count/thread_ts, files, reactions; optionally each thread's replies nested |
 | `slack_read_thread(channel, thread_ts, limit=200)` | the parent and all replies of one thread |

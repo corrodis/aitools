@@ -362,8 +362,11 @@ def _wrap(fn):
 # tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool(description="Get slack-mcp configuration and version info.")
+@mcp.tool(name="slack_server_info", description="Get slack-mcp configuration and version info.")
 def get_server_info() -> dict[str, Any]:
+    # Prefixed (unlike other mcp/* servers' get_server_info) because clients
+    # that merge several servers into one tool list -- daqpy -- reject
+    # duplicate names.
     return {
         "name": "slack",
         "version": _version(),
