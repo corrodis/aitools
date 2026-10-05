@@ -67,6 +67,13 @@ class SlackBot:
         self.home_channel_id: str = ""
         self.conversations: dict[str, Conversation] = {}
         self._seen: dict[str, float] = {}
+        # Brakes: per-user and global turn rates, and turns in flight. A bot
+        # that can call tools and an LLM must not be able to "go crazy" on a
+        # burst of messages, a mention storm, or a misbehaving client.
+        self._rate_user = RateLimiter(getattr(cfg, "rate_user", "10/10m"))
+        self._rate_total = RateLimiter(getattr(cfg, "rate_total", "60/10m"))
+        self._inflight = asyncio.Semaphore(max(1, int(getattr(cfg, "max_concurrent", 3))))
+        self._limit_notified: dict[str, float] = {}
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -200,11 +207,17 @@ class SlackBot:
                     await self._post(channel, thread_ts, reply)
                     return
 
-                await self._react(channel, event.get("ts", ""), working)
-                status = self._tool_notifier(conv, channel, thread_ts)
-                answer = await conv.ask(text, on_tool=status)
-                await status.finish()
-                await self._post(channel, thread_ts, answer)
+                retry = self._rate_check(user)
+                if retry is not None:
+                    await self._notify_limit(channel, thread_ts, key, retry)
+                    return
+
+                async with self._inflight:
+                    await self._react(channel, event.get("ts", ""), working)
+                    status = self._tool_notifier(conv, channel, thread_ts)
+                    answer = await conv.ask(text, on_tool=status)
+                    await status.finish()
+                    await self._post(channel, thread_ts, answer)
                 usage_log.record_turn(conv, self.cfg, channel, thread_ts, user)
         except Exception as exc:
             log.exception("Turn failed in %s", key)
@@ -214,6 +227,29 @@ class SlackBot:
                 log.error("Could not deliver the error report either")
         finally:
             await self._react(channel, event.get("ts", ""), working, remove=True)
+
+    def _rate_check(self, user: str) -> float | None:
+        """None if a turn may run now; otherwise seconds until it could."""
+        ok_user, wait_user = self._rate_user.allow(user or "?")
+        if not ok_user:
+            log.info("rate limit (user %s): retry in %.0fs", user, wait_user)
+            return wait_user
+        ok_total, wait_total = self._rate_total.allow("*")
+        if not ok_total:
+            self._rate_user.refund(user or "?")  # the user's slot was not used
+            log.info("rate limit (total): retry in %.0fs", wait_total)
+            return wait_total
+        return None
+
+    async def _notify_limit(self, channel: str, thread_ts: str, key: str, retry: float) -> None:
+        """One notice per thread per window; later messages are dropped silently."""
+        now = time.monotonic()
+        if now - self._limit_notified.get(key, -1e9) < retry:
+            return
+        self._limit_notified[key] = now
+        mins = max(1, int(retry // 60 + (1 if retry % 60 else 0)))
+        await self._post(channel, thread_ts,
+                         f"_I'm rate-limited right now — please try again in about {mins} min._")
 
     async def _context(self, channel: str, thread_ts: str, user: str) -> dict:
         context = {"interface": "slack", "is_dm": _is_dm(channel)}
@@ -341,6 +377,46 @@ class _ToolStatus:
         except SlackApiError as exc:
             # Progress display is never worth failing a turn over.
             log.debug("tool status update failed: %s", exc.response.get("error", exc))
+
+
+_RATE_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+
+
+def parse_rate(spec: str) -> tuple[int, float]:
+    """``"10/10m"`` → (10, 600.0); ``"0/…"`` or ``""`` disables the limit."""
+    spec = (spec or "").strip()
+    if not spec:
+        return 0, 0.0
+    m = re.fullmatch(r"(\d+)\s*/\s*(\d+)\s*([smhd])", spec, re.I)
+    if not m:
+        raise ValueError(f"bad rate {spec!r}; use N/period such as 10/10m or 100/1h")
+    return int(m.group(1)), float(m.group(2)) * _RATE_UNITS[m.group(3).lower()]
+
+
+class RateLimiter:
+    """Sliding-window limiter: at most ``n`` events per ``window`` seconds per key."""
+
+    def __init__(self, spec: str):
+        self.n, self.window = parse_rate(spec)
+        self._events: dict[str, list[float]] = {}
+
+    def allow(self, key: str) -> tuple[bool, float]:
+        """(allowed, seconds until the next slot frees up). Records the event if allowed."""
+        if self.n <= 0:
+            return True, 0.0
+        now = time.monotonic()
+        stamps = [t for t in self._events.get(key, []) if now - t < self.window]
+        if len(stamps) >= self.n:
+            self._events[key] = stamps
+            return False, self.window - (now - stamps[0])
+        stamps.append(now)
+        self._events[key] = stamps
+        return True, 0.0
+
+    def refund(self, key: str) -> None:
+        """Undo the most recent allow() for ``key`` (used when a later check refuses the turn)."""
+        if self._events.get(key):
+            self._events[key].pop()
 
 
 def _is_dm(channel: str) -> bool:

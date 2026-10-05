@@ -15,7 +15,8 @@ from mu2e_slack.backend import NotSupported
 def _cfg(**kw):
     base = dict(slack_bot_token="xoxb-test", slack_app_token="xapp-test", channel="home",
                 thread_followups=True, command_prefix="!", idle_timeout=10, privacy=False,
-                log_output="", endpoint="http://llm", context_limit=1000)
+                log_output="", endpoint="http://llm", context_limit=1000,
+                rate_user="2/10m", rate_total="3/10m", max_concurrent=2)
     base.update(kw)
     return NS(**base)
 
@@ -113,6 +114,34 @@ def test_should_handle_rules():
         assert bot._should_handle(msg, "D0123ABCD", False, "D0123ABCD:9")
         bot.conversations["D0123ABCD:9"] = object()
         assert bot._should_handle(msg, "D0123ABCD", False, "D0123ABCD:9")
+    _run(case)
+
+
+def test_parse_rate_and_limiter():
+    assert slackbot.parse_rate("10/10m") == (10, 600.0)
+    assert slackbot.parse_rate("100/1h") == (100, 3600.0)
+    assert slackbot.parse_rate("") == (0, 0.0) and slackbot.parse_rate("0/1m")[0] == 0
+    with pytest.raises(ValueError):
+        slackbot.parse_rate("ten per minute")
+    lim = slackbot.RateLimiter("2/10m")
+    assert lim.allow("u")[0] and lim.allow("u")[0]
+    ok, wait = lim.allow("u")
+    assert not ok and 0 < wait <= 600
+    assert lim.allow("other")[0]            # per key
+    lim.refund("other")
+    assert lim.allow("other")[0]            # refund gave the slot back
+    assert slackbot.RateLimiter("")._events == {} and slackbot.RateLimiter("").allow("x") == (True, 0.0)
+
+
+def test_rate_check_user_then_total():
+    async def case(bot):
+        assert bot._rate_check("alice") is None and bot._rate_check("alice") is None
+        assert bot._rate_check("alice") is not None          # user limit 2/10m
+        assert bot._rate_check("bob") is None                 # total now 3/3
+        assert bot._rate_check("carol") is not None           # total limit
+        # carol's user slot was refunded, so once the total frees she is not doubly penalised
+        bot._rate_total = slackbot.RateLimiter("")
+        assert bot._rate_check("carol") is None
     _run(case)
 
 

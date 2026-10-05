@@ -76,6 +76,13 @@ class Config:
     # Conversations idle longer than this are dropped from memory (their usage
     # record is already on disk).
     idle_timeout: int = 4 * 3600
+    # Rate limits on LLM turns (commands like !help are exempt): "N/period"
+    # per Slack user and for the whole bot, plus a cap on turns in flight.
+    # Over the limit a thread gets one short "try again in …" reply per
+    # window; further messages are dropped silently and never queued.
+    rate_user: str = "10/10m"
+    rate_total: str = "60/10m"
+    max_concurrent: int = 3
 
     # --- Logging -------------------------------------------------------------
     log_output: str = ""
@@ -143,6 +150,13 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, argparse.Namespac
                    help="Seconds before an inactive thread's conversation is forgotten "
                         "(default: %(default)s)")
 
+    p.add_argument("--rate-user", default=os.environ.get("MU2E_SLACK_RATE_USER", "10/10m"),
+                   help="Max LLM turns per Slack user, as N/period e.g. 10/10m, 100/1h (default: %(default)s)")
+    p.add_argument("--rate-total", default=os.environ.get("MU2E_SLACK_RATE_TOTAL", "60/10m"),
+                   help="Max LLM turns for the whole bot, N/period (default: %(default)s)")
+    p.add_argument("--max-concurrent", type=int, default=int(os.environ.get("MU2E_SLACK_MAX_CONCURRENT", 3)),
+                   help="Max turns in flight at once; others wait (default: %(default)s)")
+
     p.add_argument("--log-output", default=os.environ.get("LOG_OUTPUT", _default_log_output()),
                    help="Usage jsonl path (default: %(default)s)")
     p.add_argument("--system-prompt-file", default=os.environ.get("MU2E_SLACK_SYSTEM_PROMPT_FILE", ""),
@@ -174,6 +188,9 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, argparse.Namespac
         command_prefix=args.command_prefix,
         tool_notifications=not args.no_tool_notifications,
         idle_timeout=args.idle_timeout,
+        rate_user=args.rate_user,
+        rate_total=args.rate_total,
+        max_concurrent=max(1, args.max_concurrent),
         log_output=args.log_output,
         privacy=_env_flag("LOG_PRIVACY", False),
         system_prompt=system_prompt,

@@ -60,6 +60,24 @@ prefix with `--command-prefix`.
 Compaction also happens automatically once a request reaches 80% of
 `--context-limit`.
 
+## Rate limits
+
+Three brakes keep a tool-calling bot from running away on a burst of
+messages, a mention storm or a misbehaving client:
+
+| Flag / env | Default | Meaning |
+|---|---|---|
+| `--rate-user` / `MU2E_SLACK_RATE_USER` | `10/10m` | LLM turns per Slack user per window |
+| `--rate-total` / `MU2E_SLACK_RATE_TOTAL` | `60/10m` | LLM turns for the whole bot per window |
+| `--max-concurrent` / `MU2E_SLACK_MAX_CONCURRENT` | `3` | turns in flight at once; others wait their turn |
+
+`N/period` with `s`, `m`, `h`, `d`; `0/…` or empty disables a limit. `!`
+commands are exempt (no model call). Over a limit, the thread gets one
+"_I'm rate-limited right now — please try again in about N min_" reply per
+window and further messages are dropped — never queued. The per-turn cost is
+bounded separately by the backend (`--max-tool-iterations` here, the tool
+budget in daqpy).
+
 ## Slack app setup
 
 See [SLACK_APP.md](SLACK_APP.md) for scopes and events by use case (mentions,
