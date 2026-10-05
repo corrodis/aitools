@@ -52,15 +52,14 @@ Apps* → the app (e.g. `mu2eshifterbot`). In the left sidebar:
 
 ## Our deployments
 
-**`mu2eshifterbot`** (DAQ bot, daqpy) — observed scopes on 2026-10-05:
-`app_mentions:read, chat:write, channels:history, channels:read,
-groups:history, users:read, reactions:write` (+ `assistant:write`,
+**`daqbot`** (DAQ bot, daqpy; bot user id `U0B1ER7QNV7`, username still
+`mu2eshifterbot`) — scopes as of 2026-10-05: `app_mentions:read, chat:write,
+channels:history, channels:read, groups:history, groups:read, users:read,
+reactions:write, im:history, im:read, im:write` (+ `assistant:write`,
 `links:write`, `emoji:read`, `incoming-webhook`, `metadata.message:read`,
-which nothing here uses). To cover every row above it still needs:
-
-- `groups:read` — private channel names (its home channel is private);
-- `im:history`, `im:read`, `im:write` + event `message.im` — direct messages;
-- an invite to `#mu2e-shift` — for `slack-mcp` to read it.
+which nothing here uses). Events: `app_mention`, `message.channels`,
+`message.groups`, `message.im`. That covers every row above; for
+`slack-mcp` to read `#mu2e-shift` it only still needs an invite there.
 
 Its token serves both `daqpy-slack` and `slack-mcp` on the DAQ cluster.
 That is convenient but means every channel the reader is invited to is
