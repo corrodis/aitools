@@ -52,8 +52,13 @@ Apps* → the app (e.g. `mu2eshifterbot`). In the left sidebar:
 
 ## Our deployments
 
-**`daqbot`** (DAQ bot, daqpy; bot user id `U0B1ER7QNV7`, username still
-`mu2eshifterbot`) — scopes as of 2026-10-05: `app_mentions:read, chat:write,
+**`daqbot`** (DAQ bot, daqpy; app `A0B1EQ1T1U1`, bot user `U0B1ER7QNV7`).
+Settings: [app home / bot name / Chat tab](https://api.slack.com/apps/A0B1EQ1T1U1/app-home) ·
+[scopes](https://api.slack.com/apps/A0B1EQ1T1U1/oauth) ·
+[events](https://api.slack.com/apps/A0B1EQ1T1U1/event-subscriptions).
+Note the *app* name (Basic Information) and the *bot user's* display name
+(App Home → Your App's Presence → Edit) are separate; the latter is what
+mentions and DMs show. Scopes as of 2026-10-05: `app_mentions:read, chat:write,
 channels:history, channels:read, groups:history, groups:read, users:read,
 reactions:write, im:history, im:read, im:write` (+ `assistant:write`,
 `links:write`, `emoji:read`, `incoming-webhook`, `metadata.message:read`,
