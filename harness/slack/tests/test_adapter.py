@@ -237,6 +237,17 @@ def test_usage_record_from_snapshot(tmp_path):
     assert len(lines) == 1 and '"turns": 2' in lines[0]
 
 
+def test_incoming_markup_is_rendered():
+    async def case(bot):
+        async def fake_users_info(user):
+            return {"user": {"real_name": {"U1": "Alice"}.get(user)}}
+        bot.web.users_info = fake_users_info
+        out = await bot._plain_text("<@U1> look at <#C9|mu2e-shift> and <https://x.y/z|the log> &lt;ok&gt; <!here>")
+        assert out == "@Alice look at #mu2e-shift and the log (https://x.y/z) <ok> @here"
+        assert bot._user_names == {"U1": "Alice"}
+    _run(case)
+
+
 def test_mrkdwn_and_chunks():
     md = "# Title\n\nSome **bold** and [a link](http://x) and\n- item\n```\n**raw**\n```"
     out = slackbot.to_mrkdwn(md)

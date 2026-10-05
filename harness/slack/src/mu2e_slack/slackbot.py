@@ -73,6 +73,7 @@ class SlackBot:
         self.allowed_channel_ids: set[str] = set()   # empty = no restriction
         self.conversations: dict[str, Conversation] = {}
         self._askers: dict[str, set[str]] = {}   # thread key -> users who mentioned the bot there
+        self._user_names: dict[str, str] = {}
         self._seen: dict[str, float] = {}
         # Brakes: per-user and global turn rates, and turns in flight. A bot
         # that can call tools and an LLM must not be able to "go crazy" on a
@@ -174,6 +175,30 @@ class SlackBot:
         clean = re.sub(rf"<@{self.bot_user_id}>", "", text).strip()
         asyncio.create_task(self._respond(event, channel, thread_ts, key, clean))
 
+    async def _plain_text(self, text: str) -> str:
+        """Slack markup → what a human sees: <#C…|name> → #name, <@U…> → @Name,
+        <url|label> → label (url). Otherwise the model reads channel/user ids
+        and repeats them back."""
+        async def user_name(uid: str) -> str:
+            if uid in self._user_names:
+                return self._user_names[uid]
+            name = uid
+            try:
+                info = await self.web.users_info(user=uid)
+                name = info["user"].get("real_name") or info["user"].get("name") or uid
+            except Exception:  # noqa: BLE001
+                pass
+            self._user_names[uid] = name
+            return name
+
+        for uid in set(re.findall(r"<@([A-Z0-9]+)(?:\|[^>]*)?>", text)):
+            text = re.sub(rf"<@{uid}(?:\|[^>]*)?>", "@" + await user_name(uid), text)
+        text = re.sub(r"<#([A-Z0-9]+)\|([^>]*)>", lambda m: "#" + (m.group(2) or m.group(1)), text)
+        text = re.sub(r"<(https?://[^|>]+)\|([^>]*)>", lambda m: f"{m.group(2)} ({m.group(1)})", text)
+        text = re.sub(r"<(https?://[^>]+)>", lambda m: m.group(1), text)
+        text = re.sub(r"<!(channel|here|everyone)>", lambda m: "@" + m.group(1), text)
+        return text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+
     def _should_handle(self, event: dict, channel: str, mentioned: bool, key: str, user: str = "") -> bool:
         # Direct messages: everything is addressed to the bot. A top-level DM
         # starts a thread (the conversation); replies in it continue it. Needs
@@ -228,6 +253,8 @@ class SlackBot:
                 conv = await self.backend.new_conversation(
                     key, await self._context(channel, thread_ts, user))
                 self.conversations[key] = conv
+
+            text = await self._plain_text(text)
 
             # One turn at a time per thread: two quick messages must not
             # interleave tool calls in the same message list.
