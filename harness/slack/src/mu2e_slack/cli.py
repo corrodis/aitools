@@ -42,7 +42,12 @@ async def check(cfg, backend: Backend, name: str = "mu2e-slack-bot") -> int:
             print(f"  authenticated as {bot.bot_user_id}")
             print(f"  home channel: {cfg.channel or '(none -- mention-only everywhere)'}"
                   f"{f' -> {bot.home_channel_id}' if bot.home_channel_id else ''}")
-            print(f"  thread follow-ups: {'on' if cfg.thread_followups else 'off (mention required every time)'}")
+            mode = cfg.thread_followups
+            window = getattr(cfg, "followup_window", 0)
+            print(f"  thread follow-ups: {mode}"
+                  f"{f' (within {window // 60} min of the last answer)' if mode not in ('none', False) and window else ''}"
+                  f"{'; DMs off' if not getattr(cfg, 'dm_enabled', True) else ''}"
+                  f"{'; channels: ' + ', '.join(cfg.allowed_channels) if getattr(cfg, 'allowed_channels', None) else ''}")
         except Exception as exc:  # noqa: BLE001
             ok = False
             print(f"  FAILED: {exc}")

@@ -70,7 +70,15 @@ class Config:
     # channels an admin invites it to; this one is its home channel, the only
     # place it follows thread replies that do not mention it.
     channel: str = ""
-    thread_followups: bool = True
+    # Who may continue a tracked thread without re-mentioning the bot:
+    #   asker  -- anyone who has mentioned the bot in that thread (default)
+    #   home   -- anyone, but only in the home channel (the original rule)
+    #   all    -- anyone, in any tracked thread (noisy in busy threads)
+    #   none   -- nobody; every message needs a mention
+    thread_followups: str = "asker"
+    # Follow-ups without a mention only within this many seconds of the bot's
+    # last answer in the thread; 0 = no limit.
+    followup_window: int = 1800
     # Where the bot may act at all. Empty allowlist = any channel it has been
     # invited to (mentions only, outside the home channel). The home channel
     # is always allowed. DMs are governed by dm_enabled only.
@@ -150,10 +158,17 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, argparse.Namespac
     p.add_argument("--no-dm", action="store_true",
                    help="Ignore direct messages entirely (default: DMs are answered when the app "
                         "has the im:history scope and the message.im event).")
+    p.add_argument("--thread-followups", choices=("asker", "home", "all", "none"),
+                   default=os.environ.get("MU2E_SLACK_THREAD_FOLLOWUPS", "asker"),
+                   help="Who may continue a tracked thread without re-mentioning the bot: asker = "
+                        "whoever has mentioned it in that thread (default); home = anyone, home "
+                        "channel only; all = anyone, any thread; none = a mention every time.")
     p.add_argument("--no-thread-followups", action="store_true",
-                   help="Require an explicit @mention on every message, including thread "
-                        "replies. Strictest setting: the app then never acts on a message "
-                        "it was not tagged in.")
+                   help="Same as --thread-followups none: the app never acts on a message it "
+                        "was not tagged in (DMs excepted).")
+    p.add_argument("--followup-window", type=int, default=int(os.environ.get("MU2E_SLACK_FOLLOWUP_WINDOW", 1800)),
+                   help="Seconds after the bot's last answer during which thread follow-ups "
+                        "without a mention are accepted; 0 = no limit (default: %(default)s)")
     p.add_argument("--command-prefix", default=os.environ.get("MU2E_SLACK_COMMAND_PREFIX", "!"),
                    help="Prefix for in-thread commands like !help (default: %(default)s)")
     p.add_argument("--no-tool-notifications", action="store_true",
@@ -196,7 +211,8 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, argparse.Namespac
         registry_url=args.registry,
         tool_timeout=args.tool_timeout,
         channel=args.channel,
-        thread_followups=not args.no_thread_followups,
+        thread_followups="none" if args.no_thread_followups else args.thread_followups,
+        followup_window=max(0, args.followup_window),
         allowed_channels=[c.strip().lstrip("#") for c in args.channels.split(",") if c.strip()],
         dm_enabled=not args.no_dm and _env_flag("MU2E_SLACK_DM", True),
         command_prefix=args.command_prefix,

@@ -14,8 +14,8 @@ from mu2e_slack.backend import NotSupported
 
 def _cfg(**kw):
     base = dict(slack_bot_token="xoxb-test", slack_app_token="xapp-test", channel="home",
-                thread_followups=True, command_prefix="!", idle_timeout=10, privacy=False,
-                log_output="", endpoint="http://llm", context_limit=1000,
+                thread_followups="asker", followup_window=1800, command_prefix="!", idle_timeout=10,
+                privacy=False, log_output="", endpoint="http://llm", context_limit=1000,
                 rate_user="2/10m", rate_total="3/10m", max_concurrent=2,
                 allowed_channels=[], dm_enabled=True)
     base.update(kw)
@@ -101,32 +101,47 @@ def _run(coro_fn):
 def test_should_handle_rules():
     async def case(bot):
         msg = {"type": "message"}
+        mention = {"type": "app_mention"}
         # mention anywhere
-        assert bot._should_handle({"type": "app_mention"}, "CELSE", True, "CELSE:1")
-        # follow-up only in a tracked thread in the home channel
-        assert not bot._should_handle(msg, "CHOME", False, "CHOME:1")
-        bot.conversations["CHOME:1"] = object()
-        assert bot._should_handle(msg, "CHOME", False, "CHOME:1")
-        bot.conversations["CELSE:1"] = object()
-        assert not bot._should_handle(msg, "CELSE", False, "CELSE:1")
-        bot.cfg.thread_followups = False
-        assert not bot._should_handle(msg, "CHOME", False, "CHOME:1")
+        assert bot._should_handle(mention, "CELSE", True, "CELSE:1", "alice")
+        # follow-up (default: asker): only in a tracked thread, only by someone who mentioned the bot there
+        assert not bot._should_handle(msg, "CHOME", False, "CHOME:1", "alice")
+        bot.conversations["CHOME:1"] = FakeConv("CHOME:1", {})
+        bot._askers["CHOME:1"] = {"alice"}
+        assert bot._should_handle(msg, "CHOME", False, "CHOME:1", "alice")
+        assert not bot._should_handle(msg, "CHOME", False, "CHOME:1", "bob")      # bystander must mention
+        bot.conversations["CELSE:1"] = FakeConv("CELSE:1", {})
+        bot._askers["CELSE:1"] = {"alice"}
+        assert bot._should_handle(msg, "CELSE", False, "CELSE:1", "alice")        # asker rule works in any channel
+        # follow-up window: too long after the last answer → mention needed again
+        bot.conversations["CELSE:1"].last_active = time.monotonic() - 5000
+        assert not bot._should_handle(msg, "CELSE", False, "CELSE:1", "alice")
+        bot.cfg.followup_window = 0
+        assert bot._should_handle(msg, "CELSE", False, "CELSE:1", "alice")
+        # other modes
+        bot.cfg.thread_followups = "home"
+        assert bot._should_handle(msg, "CHOME", False, "CHOME:1", "bob")
+        assert not bot._should_handle(msg, "CELSE", False, "CELSE:1", "alice")
+        bot.cfg.thread_followups = "all"
+        assert bot._should_handle(msg, "CELSE", False, "CELSE:1", "bob")
+        bot.cfg.thread_followups = "none"
+        assert not bot._should_handle(msg, "CHOME", False, "CHOME:1", "alice")
+        bot.cfg.thread_followups = "asker"
         # direct messages need no mention: top-level (new thread) and replies alike
-        assert bot._should_handle(msg, "D0123ABCD", False, "D0123ABCD:9")
-        bot.conversations["D0123ABCD:9"] = object()
-        assert bot._should_handle(msg, "D0123ABCD", False, "D0123ABCD:9")
+        assert bot._should_handle(msg, "D0123ABCD", False, "D0123ABCD:9", "alice")
+        bot.conversations["D0123ABCD:9"] = FakeConv("D0123ABCD:9", {})
+        assert bot._should_handle(msg, "D0123ABCD", False, "D0123ABCD:9", "alice")
         # --no-dm: nothing in DMs, not even mentions
         bot.cfg.dm_enabled = False
-        assert not bot._should_handle(msg, "D0123ABCD", False, "D0123ABCD:9")
-        assert not bot._should_handle({"type": "app_mention"}, "D0123ABCD", True, "D0123ABCD:9")
+        assert not bot._should_handle(msg, "D0123ABCD", False, "D0123ABCD:9", "alice")
+        assert not bot._should_handle(mention, "D0123ABCD", True, "D0123ABCD:9", "alice")
         bot.cfg.dm_enabled = True
         # channel allowlist: mentions outside it are dropped, inside still work
-        bot.cfg.thread_followups = True
         bot.allowed_channel_ids = {"CHOME", "COK"}
-        assert bot._should_handle({"type": "app_mention"}, "COK", True, "COK:1")
-        assert not bot._should_handle({"type": "app_mention"}, "CELSE", True, "CELSE:1")
-        assert bot._should_handle(msg, "CHOME", False, "CHOME:1")       # tracked thread, home
-        assert bot._should_handle(msg, "D0123ABCD", False, "D0123ABCD:9")  # DMs unaffected by the allowlist
+        assert bot._should_handle(mention, "COK", True, "COK:1", "alice")
+        assert not bot._should_handle(mention, "CELSE", True, "CELSE:1", "alice")
+        assert bot._should_handle(msg, "CHOME", False, "CHOME:1", "alice")        # tracked thread, asker
+        assert bot._should_handle(msg, "D0123ABCD", False, "D0123ABCD:9", "alice")  # DMs unaffected
     _run(case)
 
 

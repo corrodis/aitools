@@ -17,10 +17,17 @@ into `<deploy-root>/releases/<ref>/.venv`, a `current` symlink, and a
   anywhere in this package. That is a property of what exists here, not a
   setting — see `mcp_tools.py`.
 - **Reads only what it is tagged in.** The bot acts on a message that
-  @-mentions it (in any channel it has been invited to), on replies in a
-  thread it is already part of, in its home channel only, and on direct
-  messages (see below). Anything else is dropped at the adapter before it
-  is logged or sent to the model.
+  @-mentions it (in any channel it has been invited to), on follow-ups in a
+  thread it already holds a conversation for (see below), and on direct
+  messages. Anything else is dropped at the adapter before it is logged or
+  sent to the model.
+- **Thread follow-ups.** By default (`--thread-followups asker`) only people
+  who have mentioned the bot in that thread may continue it without
+  re-mentioning, and only within `--followup-window` (30 min) of its last
+  answer; everyone else must mention it — so a busy human thread never turns
+  every reply into a model call. `home` restores the original rule (anyone,
+  home channel only), `all` allows anyone in any tracked thread, `none`
+  requires a mention every time.
 - **Direct messages.** In a DM every message is for the bot: a top-level
   message starts a thread, which is the conversation; replies in that
   thread continue it. Needs the `im:history` scope and the `message.im`
@@ -34,12 +41,11 @@ into `<deploy-root>/releases/<ref>/.venv`, a `current` symlink, and a
   dropped after `--idle-timeout`. The durable artifact is the usage record,
   not the transcript.
 
-The thread follow-up rule is what makes a thread read as a conversation
-instead of a sequence of @-prefixed commands. The cost is that Slack delivers
-every message in the home channel to this process (the Events API has no
-per-thread subscription). `--no-thread-followups` gives up the convenience
-and requires a mention on every message, which is the strictest possible
-setting.
+The follow-up rule is what makes a thread read as a conversation instead of
+a sequence of @-prefixed commands. The cost is that Slack delivers every
+message in subscribed channels to this process (the Events API has no
+per-thread subscription); the filter runs before anything is logged.
+`--no-thread-followups` (= `none`) is the strictest setting.
 
 ## Commands
 
@@ -147,7 +153,9 @@ unit's `ExecStart` is self-contained. The ones worth knowing:
 | `--model` | `gpt-oss:120b` | default model (per-thread override with `!model`) |
 | `--channel` | — | home channel name or id |
 | `--registry` | `http://mu2eaigpvm01.fnal.gov:8000/registry` | where tools come from |
-| `--no-thread-followups` | off | require an @mention on every message |
+| `--thread-followups` | `asker` | who may continue a thread without a mention: `asker`, `home`, `all`, `none` |
+| `--followup-window` | 1800 | seconds after the bot's last answer during which follow-ups count (0 = no limit) |
+| `--no-thread-followups` | off | same as `--thread-followups none` |
 | `--channels` | — | allowlist of channels the bot may act in (home channel always included) |
 | `--no-dm` | off | ignore direct messages |
 | `--context-limit` | 128000 | token budget before auto-compaction |

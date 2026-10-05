@@ -6,19 +6,24 @@ do not have to.
 
 What the bot acts on, and nothing else:
 
-  * a message that @-mentions it, in any channel it has been invited to;
-  * a reply in a thread it is already part of, in its home channel only;
+  * a message that @-mentions it, in any channel it has been invited to
+    (and, if --channels is set, only in those);
+  * a reply, without a mention, in a thread it already holds a conversation
+    for -- by default only from someone who has mentioned it in that thread
+    (--thread-followups asker) and only within --followup-window of its last
+    answer; other people must mention it. "home" restores the original
+    rule (anyone, home channel only), "all" allows anyone anywhere, "none"
+    requires a mention every time;
   * any message in a direct message with it -- a top-level DM starts a
     thread, which is the conversation, and replies in it continue it.
 
-The second rule is what makes a thread feel like a conversation instead of a
-sequence of @-prefixed commands. It does mean Slack delivers every message
-posted in the home channel to this process (the Events API has no per-thread
-subscription), so the filter below runs before anything else: a message that
-is neither a mention nor a reply in a tracked thread is dropped where it
-arrives -- never logged, never sent to the model. Run with
---no-thread-followups to drop the message.channels subscription's usefulness
-entirely and require a mention every time.
+The follow-up rule is what makes a thread feel like a conversation instead
+of a sequence of @-prefixed commands; restricting it to the people who asked
+keeps a busy human thread from turning every reply into a model call. Slack
+delivers every message in subscribed channels to this process (the Events
+API has no per-thread subscription), so the filter below runs before
+anything else: a message that is not addressed to the bot is dropped where
+it arrives -- never logged, never sent to the model.
 """
 
 from __future__ import annotations
@@ -67,6 +72,7 @@ class SlackBot:
         self.home_channel_id: str = ""
         self.allowed_channel_ids: set[str] = set()   # empty = no restriction
         self.conversations: dict[str, Conversation] = {}
+        self._askers: dict[str, set[str]] = {}   # thread key -> users who mentioned the bot there
         self._seen: dict[str, float] = {}
         # Brakes: per-user and global turn rates, and turns in flight. A bot
         # that can call tools and an LLM must not be able to "go crazy" on a
@@ -153,10 +159,12 @@ class SlackBot:
         log.info("event type=%s channel=%s ts=%s thread=%s mentioned=%s",
                  event.get("type"), channel, ts, thread_ts, mentioned)
 
-        if not self._should_handle(event, channel, mentioned, key):
+        if not self._should_handle(event, channel, mentioned, key, event.get("user", "")):
             log.info("  dropped: not addressed to me (known thread=%s, home=%s)",
                      key in self.conversations, channel == self.home_channel_id)
             return
+        if mentioned and not _is_dm(channel):
+            self._askers.setdefault(key, set()).add(event.get("user", ""))
 
         # A mention in a channel arrives twice: once as app_mention, once as
         # message. Whichever lands first wins.
@@ -166,7 +174,7 @@ class SlackBot:
         clean = re.sub(rf"<@{self.bot_user_id}>", "", text).strip()
         asyncio.create_task(self._respond(event, channel, thread_ts, key, clean))
 
-    def _should_handle(self, event: dict, channel: str, mentioned: bool, key: str) -> bool:
+    def _should_handle(self, event: dict, channel: str, mentioned: bool, key: str, user: str = "") -> bool:
         # Direct messages: everything is addressed to the bot. A top-level DM
         # starts a thread (the conversation); replies in it continue it. Needs
         # the im:history scope and the message.im event subscription.
@@ -179,11 +187,24 @@ class SlackBot:
             return True
         if event.get("type") != "message":
             return False
-        if not self.cfg.thread_followups:
+        # Follow-up without a mention: only in a thread this process already
+        # holds a conversation for, per --thread-followups and the window.
+        mode = getattr(self.cfg, "thread_followups", "asker")
+        if mode is True:    # pre-mode configs
+            mode = "home"
+        conv = self.conversations.get(key)
+        if mode in ("none", False) or conv is None:
             return False
-        # Only in the home channel, and only in a thread this process is
-        # already holding a conversation for.
-        return channel == self.home_channel_id and key in self.conversations
+        if mode == "home":
+            ok = channel == self.home_channel_id
+        elif mode == "all":
+            ok = True
+        else:  # asker
+            ok = bool(user) and user in self._askers.get(key, set())
+        if not ok:
+            return False
+        window = int(getattr(self.cfg, "followup_window", 0) or 0)
+        return not window or (time.monotonic() - conv.last_active) <= window
 
     def _already_seen(self, event_key: str) -> bool:
         now = time.monotonic()
@@ -327,6 +348,7 @@ class SlackBot:
         ]
         for key in stale:
             conv = self.conversations.pop(key)
+            self._askers.pop(key, None)
             try:
                 await self.backend.close_conversation(conv)
             except Exception:  # noqa: BLE001
@@ -342,6 +364,7 @@ class SlackBot:
             except Exception:  # noqa: BLE001
                 log.exception("close_conversation failed for %s", key)
         self.conversations.clear()
+        self._askers.clear()
 
 
 class _ToolStatus:
