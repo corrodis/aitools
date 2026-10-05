@@ -29,8 +29,9 @@ Apps* → the app (e.g. `mu2eshifterbot`). In the left sidebar:
   and add the events from the table (`app_mention`, `message.channels`,
   `message.groups`, `message.im`). With Socket Mode there is no Request URL
   to fill in. Save changes.
-- **App Home → Show Tabs** — for DMs, tick *Messages Tab* and *Allow users to
-  send Slash commands and messages from the messages tab*.
+- **App Home → Show Tabs** — for DMs, enable the **Chat** tab (older UI:
+  *Messages Tab*) and tick *Allow users to send Slash commands and messages
+  from the chat tab*. The Home tab is not needed.
 - In Slack itself: `/invite @<bot>` in every channel it should answer in or
   read from.
 
@@ -41,7 +42,7 @@ Apps* → the app (e.g. `mu2eshifterbot`). In the left sidebar:
 | **Answer @mentions** in channels the bot is invited to | `app_mentions:read`, `chat:write` | `app_mention` | Minimum for the chat bot. The bot must be invited (`/invite @bot`) to each channel. |
 | **Thread follow-ups without a mention** (home channel) | + `channels:history` | + `message.channels` | Slack then delivers *every* message in subscribed public channels; the adapter drops what isn't addressed to it before logging anything. |
 | **Private home channel** | + `groups:history`, `groups:read` | + `message.groups` | `groups:read` is also what lets the bot resolve a private channel's *name* (`conversations.info`); without it the id is used. |
-| **Direct messages** with the bot | + `im:history` (and `im:read`, `im:write` to let the app open DMs itself) | + `message.im` | A top-level DM starts a thread = conversation; replies continue it. Enable "Allow users to send Slash commands and messages from the messages tab" under App Home. |
+| **Direct messages** with the bot | + `im:history` (and `im:read`, `im:write` to let the app open DMs itself) | + `message.im` | A top-level DM starts a thread = conversation; replies continue it. Under *App Home*, enable the Chat (Messages) tab and "Allow users to send … messages from the chat tab". |
 | **Status/progress feedback** (the per-tool status line edited in place, "working" reactions) | `chat:write` (edit own messages), `reactions:write` | — | Both best-effort; a missing scope only loses the feedback. |
 | **Show author names** (resolve `<@U…>` to people) | `users:read` | — | Used by the chat bot's context and by `slack-mcp`'s message formatting. |
 | **Read channel history** (`slack-mcp`: `slack_read_channel`, `slack_read_thread`) | `channels:history`, `channels:read`, `users:read`; private channels: `groups:history`, `groups:read` | — (polling API, no events) | The bot must be a **member** of each allowlisted channel — `conversations.list` shows public channels it is not in, but `conversations.history` then fails with `not_in_channel`. |
