@@ -36,8 +36,11 @@ Times accept relative (`24h`, `7d`, `30m`), ISO 8601, or unix epoch.
 
 A bot token (`xoxb-…`) with scopes `channels:history`, `channels:read`,
 `users:read`; for private channels also `groups:history`, `groups:read`.
-Invite the bot to every allowlisted channel (`/invite @<bot>`). The DAQ bot
-(`mu2eshifterbot`) token can be reused; this server never posts with it.
+Invite the bot to every allowlisted channel (`/invite @<bot>`) — Slack lists
+public channels the bot is not in, but refuses their history
+(`not_in_channel`). The DAQ bot (`mu2eshifterbot`) token can be reused; this
+server never posts with it. Scopes by use case for all our Slack tools:
+`harness/slack/SLACK_APP.md`.
 
 ## Environment variables
 
