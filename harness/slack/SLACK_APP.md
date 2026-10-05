@@ -14,6 +14,26 @@ enable it and create an **app-level token** with `connections:write`
 (`xapp-…`, `SLACK_APP_TOKEN`). That token is only for the event stream;
 the API calls use the bot token (`SLACK_BOT_TOKEN`).
 
+## Where to click
+
+Everything below is configured at <https://api.slack.com/apps> → *Your
+Apps* → the app (e.g. `mu2eshifterbot`). In the left sidebar:
+
+- **Socket Mode** — enable; the app-level token (`xapp-…`) is created here
+  or under *Basic Information → App-Level Tokens* (scope `connections:write`).
+- **OAuth & Permissions → Scopes → Bot Token Scopes** — add scopes from the
+  table. After adding any, the yellow banner at the top of the page asks you
+  to **reinstall the app** to the workspace; do that. The Bot User OAuth
+  Token (`xoxb-…`, `SLACK_BOT_TOKEN`) is on the same page and stays valid.
+- **Event Subscriptions** — *Enable Events*, then *Subscribe to bot events*
+  and add the events from the table (`app_mention`, `message.channels`,
+  `message.groups`, `message.im`). With Socket Mode there is no Request URL
+  to fill in. Save changes.
+- **App Home → Show Tabs** — for DMs, tick *Messages Tab* and *Allow users to
+  send Slash commands and messages from the messages tab*.
+- In Slack itself: `/invite @<bot>` in every channel it should answer in or
+  read from.
+
 ## By use case
 
 | Use case | Bot token scopes | Bot events | Notes |
