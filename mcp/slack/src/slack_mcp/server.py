@@ -226,8 +226,16 @@ class SlackReader:
         for ch in self.channels():
             if ch.get("id") and (key == ch["id"] or key == ch.get("name")):
                 return ch
-        names = ", ".join(f"#{c.get('name')}" for c in self.channels() if c.get("id"))
-        raise ValueError(f"channel {channel!r} is not available here; readable: {names or '(none)'}")
+        names = ", ".join(f"#{c.get('name')} ({c['id']})" for c in self.channels() if c.get("id"))
+        # Name the refused channel when it is an id of a public channel, so the
+        # caller can report "#mu2e-shift" rather than an opaque id.
+        label = f"#{key}"
+        if re.fullmatch(r"[CG][A-Z0-9]{8,}", key):
+            try:
+                label = f"#{self.client.conversations_info(channel=key)['channel'].get('name', key)} ({key})"
+            except Exception:  # noqa: BLE001
+                label = key
+        raise ValueError(f"{label} is not readable here (not in the allowlist); readable: {names or '(none)'}")
 
     # -- users --------------------------------------------------------------
 

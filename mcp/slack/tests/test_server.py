@@ -108,9 +108,10 @@ def test_resolve_refuses_non_allowlisted(reader):
     assert reader.resolve("G0000000002")["name"] == "test_llm"
     with pytest.raises(ValueError) as e:
         reader.resolve("secret")
-    assert "#mu2e-shift" in str(e.value) and "secret" in str(e.value)
-    with pytest.raises(ValueError):
-        reader.resolve("C0000000003")  # by id either
+    assert "#mu2e-shift (C0000000001)" in str(e.value) and "#secret is not readable" in str(e.value)
+    with pytest.raises(ValueError) as e:
+        reader.resolve("C0000000003")  # by id either — and the id is named in the message
+    assert "#secret (C0000000003) is not readable" in str(e.value)
 
 
 def test_read_channel_formats_and_orders(reader):
