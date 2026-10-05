@@ -62,6 +62,10 @@ Compaction also happens automatically once a request reaches 80% of
 
 ## Slack app setup
 
+See [SLACK_APP.md](SLACK_APP.md) for scopes and events by use case (mentions,
+thread follow-ups, private channels, DMs, reading channels for `slack-mcp`,
+posting reports). The short version for this bot:
+
 Create an app at <https://api.slack.com/apps>, enable **Socket Mode**, and
 generate an app-level token with `connections:write`. Bot token scopes:
 
