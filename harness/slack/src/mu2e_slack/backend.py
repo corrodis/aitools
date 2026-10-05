@@ -68,6 +68,10 @@ class Backend(Protocol):
     """Factory for conversations plus what the commands and --check need."""
 
     name: str
+    # False when conversations return None from usage_snapshot() because the
+    # backend keeps its own usage log; --check then does not advertise the
+    # adapter's log path.
+    adapter_usage_log: bool = True
 
     async def open(self) -> None:
         """Connect / load tools.  Called once before Slack is joined."""

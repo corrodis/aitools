@@ -46,8 +46,13 @@ async def check(cfg, backend: Backend, name: str = "mu2e-slack-bot") -> int:
         except Exception as exc:  # noqa: BLE001
             ok = False
             print(f"  FAILED: {exc}")
+        finally:
+            await bot.close()  # never connected to Socket Mode, but the HTTP session is open
 
-    print(f"\nUsage log: {cfg.log_output}{'  (privacy mode)' if cfg.privacy else ''}")
+    if getattr(backend, "adapter_usage_log", True):
+        print(f"\nUsage log: {cfg.log_output}{'  (privacy mode)' if cfg.privacy else ''}")
+    else:
+        print(f"\nUsage log: written by the {backend.name} backend itself")
     return 0 if ok else 1
 
 

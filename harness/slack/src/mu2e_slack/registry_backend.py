@@ -44,6 +44,7 @@ def make_llm_client(cfg) -> AsyncOpenAI:
 
 class RegistryBackend(Backend):
     name = "registry"
+    adapter_usage_log = True
 
     def __init__(self, cfg):
         self.cfg = cfg
