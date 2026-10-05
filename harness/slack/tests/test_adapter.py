@@ -241,10 +241,14 @@ def test_incoming_markup_is_rendered():
     async def case(bot):
         async def fake_users_info(user):
             return {"user": {"real_name": {"U1": "Alice"}.get(user)}}
+
+        async def fake_conversations_info(channel):
+            return {"channel": {"name": {"C04": "crv_vst"}.get(channel)}}
         bot.web.users_info = fake_users_info
-        out = await bot._plain_text("<@U1> look at <#C9|mu2e-shift> and <https://x.y/z|the log> &lt;ok&gt; <!here>")
-        assert out == "@Alice look at #mu2e-shift and the log (https://x.y/z) <ok> @here"
-        assert bot._user_names == {"U1": "Alice"}
+        bot.web.conversations_info = fake_conversations_info
+        out = await bot._plain_text("<@U1> look at <#C9|mu2e-shift> and <#C04> and <https://x.y/z|the log> &lt;ok&gt; <!here>")
+        assert out == "@Alice look at #mu2e-shift and #crv_vst and the log (https://x.y/z) <ok> @here"
+        assert bot._user_names == {"U1": "Alice"} and bot._channel_names == {"C04": "crv_vst"}
     _run(case)
 
 

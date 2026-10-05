@@ -74,6 +74,7 @@ class SlackBot:
         self.conversations: dict[str, Conversation] = {}
         self._askers: dict[str, set[str]] = {}   # thread key -> users who mentioned the bot there
         self._user_names: dict[str, str] = {}
+        self._channel_names: dict[str, str] = {}
         self._seen: dict[str, float] = {}
         # Brakes: per-user and global turn rates, and turns in flight. A bot
         # that can call tools and an LLM must not be able to "go crazy" on a
@@ -191,9 +192,24 @@ class SlackBot:
             self._user_names[uid] = name
             return name
 
+        async def channel_name(cid: str) -> str:
+            if cid in self._channel_names:
+                return self._channel_names[cid]
+            name = cid
+            try:
+                info = await self.web.conversations_info(channel=cid)
+                name = info["channel"].get("name") or cid
+            except Exception:  # noqa: BLE001
+                pass
+            self._channel_names[cid] = name
+            return name
+
         for uid in set(re.findall(r"<@([A-Z0-9]+)(?:\|[^>]*)?>", text)):
             text = re.sub(rf"<@{uid}(?:\|[^>]*)?>", "@" + await user_name(uid), text)
+        # <#C…|name> carries the name; a bare <#C…> (what the DM client sends) does not
         text = re.sub(r"<#([A-Z0-9]+)\|([^>]*)>", lambda m: "#" + (m.group(2) or m.group(1)), text)
+        for cid in set(re.findall(r"<#([A-Z0-9]+)>", text)):
+            text = text.replace(f"<#{cid}>", "#" + await channel_name(cid))
         text = re.sub(r"<(https?://[^|>]+)\|([^>]*)>", lambda m: f"{m.group(2)} ({m.group(1)})", text)
         text = re.sub(r"<(https?://[^>]+)>", lambda m: m.group(1), text)
         text = re.sub(r"<!(channel|here|everyone)>", lambda m: "@" + m.group(1), text)
