@@ -1,4 +1,10 @@
-"""Entry point: wire config, MCP tools and Slack together, then wait."""
+"""Entry point: wire config, a backend and Slack together, then wait.
+
+``run`` and ``check`` take any :class:`~mu2e_slack.backend.Backend`, so a
+package that fronts a different agent (daqpy's DAQ bot) reuses this module
+with its own backend and gets the same Slack behaviour; ``main`` builds the
+default :class:`~mu2e_slack.registry_backend.RegistryBackend`.
+"""
 
 from __future__ import annotations
 
@@ -7,12 +13,9 @@ import logging
 import signal
 import sys
 
-import httpx2
-from openai import AsyncOpenAI
-
 from . import version
+from .backend import Backend
 from .config import parse_args
-from .mcp_tools import ToolRegistry
 from .slackbot import SlackBot
 
 log = logging.getLogger("mu2e_slack")
@@ -20,69 +23,27 @@ log = logging.getLogger("mu2e_slack")
 CLEANUP_INTERVAL = 600
 
 
-def _llm(cfg) -> AsyncOpenAI:
-    # Keep-alive is switched off deliberately, and it is not a micro-optimisation
-    # knob -- without it the agent cannot complete a single tool-using turn.
-    # Measured against vllm.fnal.gov: an LLM call works, an MCP tool call works,
-    # and the next LLM call on the SAME client dies with
-    # ssl.SSLError("[SSL] passed invalid argument") -- while the same call on a
-    # fresh client succeeds, and the whole sequence succeeds with no MCP call in
-    # between. An MCP session's teardown invalidates this client's idle pooled
-    # TLS connection (mcp and openai share one anyio/httpcore2 runtime, and the
-    # transport's task-group cancellation reaches a connection it does not own).
-    # No idle connection, nothing to poison. Costs one TLS handshake per request,
-    # which is free at chat pace.
-    http_client = httpx2.AsyncClient(
-        timeout=httpx2.Timeout(600.0, connect=30.0),
-        limits=httpx2.Limits(max_keepalive_connections=0),
-    )
-    # vllm.fnal.gov takes no key today, but the OpenAI client insists on one.
-    return AsyncOpenAI(base_url=cfg.endpoint, api_key=cfg.api_key or "EMPTY",
-                       timeout=600, http_client=http_client)
-
-
-async def _check(cfg) -> int:
+async def check(cfg, backend: Backend, name: str = "mu2e-slack-bot") -> int:
     """Verify every dependency and print what was found, without joining Slack."""
-    ok = True
-    print(f"mu2e-slack-bot {version()}")
+    print(f"{name} {version()}  (backend: {backend.name})")
 
-    print(f"\nLLM endpoint: {cfg.endpoint}")
-    try:
-        models = await _llm(cfg).models.list()
-        names = sorted(m.id for m in models.data)
-        print(f"  reachable, {len(names)} model(s); configured: {cfg.model}"
-              f"{'' if cfg.model in names else '  <-- NOT offered by this endpoint'}")
-    except Exception as exc:
-        ok = False
-        print(f"  FAILED: {exc}")
-
-    print(f"\nMCP registry: {cfg.registry_url}")
-    tools = ToolRegistry(cfg.registry_url, cfg.mcp_token, cfg.tool_timeout)
-    try:
-        await tools.load()
-        print(f"  {len(tools.tools)} tool(s) from {len(tools.servers) - len(tools.failed)}"
-              f"/{len(tools.servers)} server(s)")
-        for name, reason in sorted(tools.failed.items()):
-            print(f"  unavailable: {name} ({reason})")
-        if not cfg.mcp_token:
-            print("  note: MIKEY_TOKEN unset -- token-gated servers (ecl, runs, memory) will refuse calls")
-    except Exception as exc:
-        ok = False
-        print(f"  FAILED: {exc}")
+    ok, lines = await backend.check()
+    print()
+    print("\n".join(lines))
 
     print("\nSlack:")
     if not cfg.slack_bot_token or not cfg.slack_app_token:
         ok = False
         print("  FAILED: SLACK_BOT_TOKEN and SLACK_APP_TOKEN must both be set")
     else:
-        bot = SlackBot(cfg, _llm(cfg), tools)
+        bot = SlackBot(cfg, backend)
         try:
             await bot.connect()
             print(f"  authenticated as {bot.bot_user_id}")
             print(f"  home channel: {cfg.channel or '(none -- mention-only everywhere)'}"
                   f"{f' -> {bot.home_channel_id}' if bot.home_channel_id else ''}")
             print(f"  thread follow-ups: {'on' if cfg.thread_followups else 'off (mention required every time)'}")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             ok = False
             print(f"  FAILED: {exc}")
 
@@ -90,15 +51,14 @@ async def _check(cfg) -> int:
     return 0 if ok else 1
 
 
-async def _run(cfg) -> int:
+async def run(cfg, backend: Backend) -> int:
     if not cfg.slack_bot_token or not cfg.slack_app_token:
         log.error("SLACK_BOT_TOKEN and SLACK_APP_TOKEN must both be set")
         return 2
 
-    tools = ToolRegistry(cfg.registry_url, cfg.mcp_token, cfg.tool_timeout)
-    await tools.load()
+    await backend.open()
 
-    bot = SlackBot(cfg, _llm(cfg), tools)
+    bot = SlackBot(cfg, backend)
     await bot.connect()
     await bot.start()
 
@@ -110,15 +70,17 @@ async def _run(cfg) -> int:
     async def housekeeping():
         while not stop.is_set():
             await asyncio.sleep(CLEANUP_INTERVAL)
-            bot.cleanup()
+            await bot.cleanup()
 
     keeper = asyncio.create_task(housekeeping())
-    log.info("Ready. Model %s, %d tools.", cfg.model, len(tools.tools))
+    log.info("Ready (backend %s).", backend.name)
 
     await stop.wait()
     log.info("Shutting down")
     keeper.cancel()
+    await bot.close_all()
     await bot.close()
+    await backend.close()
     return 0
 
 
@@ -134,9 +96,12 @@ def main(argv: list[str] | None = None) -> None:
     if args.version:
         print(version())
         return
+
+    from .registry_backend import RegistryBackend  # noqa: PLC0415  (pulls in httpx2/aiohttp)
+    backend = RegistryBackend(cfg)
     if args.check:
-        sys.exit(asyncio.run(_check(cfg)))
-    sys.exit(asyncio.run(_run(cfg)))
+        sys.exit(asyncio.run(check(cfg, backend)))
+    sys.exit(asyncio.run(run(cfg, backend)))
 
 
 if __name__ == "__main__":

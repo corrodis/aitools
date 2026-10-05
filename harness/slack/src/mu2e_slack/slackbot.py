@@ -35,7 +35,7 @@ from slack_sdk.socket_mode.response import SocketModeResponse
 from slack_sdk.web.async_client import AsyncWebClient
 
 from . import commands, usage_log
-from .agent import Conversation
+from .backend import Backend, Conversation
 
 log = logging.getLogger(__name__)
 
@@ -53,10 +53,11 @@ SEEN_TTL = 300  # seconds to remember an event id for de-duplication
 
 
 class SlackBot:
-    def __init__(self, cfg, llm, tools):
+    """Socket Mode adapter in front of any :class:`~mu2e_slack.backend.Backend`."""
+
+    def __init__(self, cfg, backend: Backend):
         self.cfg = cfg
-        self.llm = llm
-        self.tools = tools
+        self.backend = backend
         self.web = AsyncWebClient(token=cfg.slack_bot_token)
         self.socket = SocketModeClient(app_token=cfg.slack_app_token, web_client=self.web)
         self.bot_user_id: str = ""
@@ -175,8 +176,8 @@ class SlackBot:
         try:
             conv = self.conversations.get(key)
             if conv is None:
-                conv = Conversation(key, self.cfg, self.llm, self.tools,
-                                    await self._context(channel, thread_ts, user))
+                conv = await self.backend.new_conversation(
+                    key, await self._context(channel, thread_ts, user))
                 self.conversations[key] = conv
 
             # One turn at a time per thread: two quick messages must not
@@ -186,8 +187,7 @@ class SlackBot:
                     reply = await commands.dispatch(
                         text, self.cfg.command_prefix,
                         lambda args: commands.CommandContext(
-                            conv=conv, args=args, cfg=self.cfg,
-                            client=self.llm, tools=self.tools,
+                            conv=conv, args=args, cfg=self.cfg, backend=self.backend,
                         ),
                     )
                     await self._post(channel, thread_ts, reply)
@@ -258,19 +258,32 @@ class SlackBot:
 
     # -- housekeeping ---------------------------------------------------------
 
-    def cleanup(self) -> int:
+    async def cleanup(self) -> int:
         """Forget conversations nobody has touched in a while. Their usage
-        records are already on disk, so this only frees memory."""
+        records are already on disk; the backend releases whatever else it
+        holds for them (sessions, subprocesses)."""
         now = time.monotonic()
         stale = [
             key for key, conv in self.conversations.items()
             if now - conv.last_active > self.cfg.idle_timeout and not conv.lock.locked()
         ]
         for key in stale:
-            del self.conversations[key]
+            conv = self.conversations.pop(key)
+            try:
+                await self.backend.close_conversation(conv)
+            except Exception:  # noqa: BLE001
+                log.exception("close_conversation failed for %s", key)
         if stale:
             log.info("Dropped %d idle conversation(s)", len(stale))
         return len(stale)
+
+    async def close_all(self) -> None:
+        for key, conv in list(self.conversations.items()):
+            try:
+                await self.backend.close_conversation(conv)
+            except Exception:  # noqa: BLE001
+                log.exception("close_conversation failed for %s", key)
+        self.conversations.clear()
 
 
 class _ToolStatus:

@@ -77,26 +77,31 @@ def _harness_commit() -> str:
         return ""
 
 
-def build_record(conv, cfg, channel: str, thread_ts: str, user: str) -> dict:
-    u = conv.usage
+def _iso(value) -> str:
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
+def build_record(snapshot: dict, cfg, channel: str, thread_ts: str, user: str) -> dict:
+    """``snapshot`` is Conversation.usage_snapshot() -- see backend.py."""
+    s = snapshot
     record = {
         "session_id":         session_id(channel, thread_ts, cfg.privacy),
         "host":               socket.gethostname(),
         "logged_at":          datetime.now(timezone.utc).isoformat(),
-        "session_created_at": conv.created_at.isoformat(),
-        "session_updated_at": conv.updated_at.isoformat(),
-        "provider":           "openai",
-        "endpoint_url":       cfg.endpoint,
-        "model":              conv.model,
+        "session_created_at": _iso(s.get("created_at")),
+        "session_updated_at": _iso(s.get("updated_at")),
+        "provider":           s.get("provider", "openai"),
+        "endpoint_url":       s.get("endpoint_url"),
+        "model":              s.get("model"),
         "harness":            _harness_commit(),
-        "turns":              u.turns,
-        "llm_calls":          u.llm_calls,
-        "tool_calls":         u.tool_calls,
-        "tool_breakdown":     u.tool_breakdown,
-        "input_tokens":       u.input_tokens,
-        "output_tokens":      u.output_tokens,
-        "cache_read_tokens":  u.cache_read_tokens,
-        "cache_write_tokens": 0,  # no prompt caching on the vllm/gpt-oss path
+        "turns":              s.get("turns", 0),
+        "llm_calls":          s.get("llm_calls", 0),
+        "tool_calls":         s.get("tool_calls", 0),
+        "tool_breakdown":     s.get("tool_breakdown", {}),
+        "input_tokens":       s.get("input_tokens", 0),
+        "output_tokens":      s.get("output_tokens", 0),
+        "cache_read_tokens":  s.get("cache_read_tokens", 0),
+        "cache_write_tokens": s.get("cache_write_tokens", 0),
     }
     if not cfg.privacy:
         record["user"] = user
@@ -145,8 +150,13 @@ def write(record: dict, path: str) -> None:
 
 
 def record_turn(conv, cfg, channel: str, thread_ts: str, user: str) -> None:
-    """Best effort: a logging failure must never cost the user their answer."""
+    """Best effort: a logging failure must never cost the user their answer.
+    Backends that keep their own usage log return None from usage_snapshot()
+    and are skipped here."""
     try:
-        write(build_record(conv, cfg, channel, thread_ts, user), cfg.log_output)
+        snapshot = conv.usage_snapshot()
+        if snapshot is None:
+            return
+        write(build_record(snapshot, cfg, channel, thread_ts, user), cfg.log_output)
     except Exception:
         log.exception("Failed to write usage record")

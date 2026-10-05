@@ -45,6 +45,7 @@ Typed in a thread, they apply to that thread only:
 | `!compact` | summarize the thread to free up context |
 | `!reset` | forget this thread's history |
 | `!verbose on\|off` | show or hide a line per tool call |
+| `!links` | links about this thread, when the backend has any (e.g. a web transcript) |
 
 Not Slack's native slash commands: those are registered workspace-wide and
 carry no `thread_ts`, so they cannot target *this* conversation. Change the
@@ -128,11 +129,36 @@ Postgres backend only has to be written once. Counts, timings, model and tool
 names only; no conversation content. `LOG_PRIVACY=1` drops the Slack user,
 channel and thread, and hashes the session id.
 
+## Backends: the same Slack behaviour in front of a different agent
+
+Everything Slack-specific (thread rules, de-duplication, the per-tool status
+message, mrkdwn conversion, chunking, `!` commands, idle cleanup, the usage
+log) lives in the adapter and only talks to a backend through the protocols
+in `backend.py`:
+
+- `Backend` — `open/close`, `new_conversation(key, context)`,
+  `close_conversation`, `list_models`, `tools_by_server`, `check`
+- `Conversation` — `ask(text, on_tool)`, `status()`, `links()`, `reset()`,
+  `compact()`, `set_model()`, `usage_snapshot()`
+
+The default is `registry_backend.RegistryBackend` (the chat loop in
+`agent.py` over the MCP registry's tools). Another package supplies its own
+backend and reuses `cli.run(cfg, backend)` / `cli.check(cfg, backend)` — daqpy
+does this for the DAQ-side bot, whose conversations are persistent daqpy chat
+sessions. A backend that lacks an operation raises `NotSupported` and the
+command replies "not available with this bot"; one that keeps its own usage
+log returns `None` from `usage_snapshot()` and the adapter writes nothing.
+
+Tests (`tests/`) exercise the adapter with a fake backend and need no
+network: `python -m pytest harness/slack/tests`.
+
 ## Files
 
 | Path | Purpose |
 |---|---|
 | `src/mu2e_slack/config.py` | CLI/env configuration |
+| `src/mu2e_slack/backend.py` | the `Backend` / `Conversation` protocols |
+| `src/mu2e_slack/registry_backend.py` | default backend: LLM client + MCP registry |
 | `src/mu2e_slack/mcp_tools.py` | MCP registry discovery and tool dispatch |
 | `src/mu2e_slack/agent.py` | the chat loop, one `Conversation` per thread |
 | `src/mu2e_slack/commands.py` | in-thread `!` commands |

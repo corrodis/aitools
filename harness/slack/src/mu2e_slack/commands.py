@@ -6,6 +6,9 @@ carries no thread_ts, which makes "switch the model for *this* conversation"
 impossible to express. Parsing a prefix out of the message text the bot was
 already going to receive keeps every command scoped to the thread it was
 typed in, and needs no extra Slack app configuration.
+
+Commands only touch the backend through the protocols in backend.py; an
+operation a backend lacks (NotSupported) gets a one-line "not here" reply.
 """
 
 from __future__ import annotations
@@ -14,16 +17,17 @@ import logging
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
+from .backend import Backend, Conversation, NotSupported
+
 log = logging.getLogger(__name__)
 
 
 @dataclass
 class CommandContext:
-    conv: "object"  # agent.Conversation
+    conv: Conversation
     args: list[str]
     cfg: "object"
-    client: "object"
-    tools: "object"
+    backend: Backend
 
 
 Handler = Callable[[CommandContext], Awaitable[str]]
@@ -56,6 +60,8 @@ async def dispatch(text: str, prefix: str, ctx_factory) -> str:
     handler, _, _ = entry
     try:
         return await handler(ctx)
+    except NotSupported as exc:
+        return f"`{prefix}{name}` is not available with this bot{f': {exc}' if str(exc) else '.'}"
     except Exception as exc:
         log.exception("Command %s failed", name)
         return f"`{name}` failed: {exc}"
@@ -75,62 +81,75 @@ async def _help(ctx: CommandContext) -> str:
 
 @command("model", "model [name]", "show or switch the model used in this thread")
 async def _model(ctx: CommandContext) -> str:
+    endpoint = ctx.conv.status().get("endpoint")
+    where = f" at {endpoint}" if endpoint else ""
     if not ctx.args:
-        return f"This thread is using `{ctx.conv.model}` at {ctx.cfg.endpoint}."
+        return f"This thread is using `{ctx.conv.model}`{where}."
 
     wanted = ctx.args[0]
     # Check before switching. An unchecked typo here bricks the thread: every
     # later turn -- and !compact with it -- fails with a 404 from the endpoint,
     # and the user has no reason to connect that to the model they set earlier.
     try:
-        listing = await ctx.client.models.list()
-        available = sorted(m.id for m in listing.data)
+        available = await ctx.backend.list_models()
     except Exception as exc:
-        return f"Could not reach {ctx.cfg.endpoint} to check that model exists: {exc}"
+        return f"Could not reach the endpoint to check that model exists: {exc}"
+    if available and wanted not in available:
+        offered = ", ".join(f"`{m}`" for m in available)
+        return f"`{wanted}` is not offered{where}. Available: {offered}"
 
-    if wanted not in available:
-        offered = ", ".join(f"`{m}`" for m in available) or "(none)"
-        return f"`{wanted}` is not offered by {ctx.cfg.endpoint}. Available: {offered}"
-
-    ctx.conv.model = wanted
+    ctx.conv.set_model(wanted)
     return f"Switched this thread to `{ctx.conv.model}`. History is kept."
 
 
 @command("models", "models", "list models the endpoint offers")
 async def _models(ctx: CommandContext) -> str:
-    listing = await ctx.client.models.list()
-    names = sorted(m.id for m in listing.data)
+    names = await ctx.backend.list_models()
     if not names:
-        return "The endpoint reported no models."
+        return f"This bot uses a fixed model: `{ctx.conv.model}`."
     return "*Available models:*\n" + "\n".join(f"• `{n}`" for n in names)
 
 
 @command("tools", "tools", "list the MCP tools available to me")
 async def _tools(ctx: CommandContext) -> str:
-    by_server: dict[str, list[str]] = {}
-    for tool in ctx.tools.tools.values():
-        by_server.setdefault(tool.server, []).append(tool.name)
-
+    by_server, failed = ctx.backend.tools_by_server()
     lines = []
     for server in sorted(by_server):
         lines.append(f"*{server}*: " + ", ".join(f"`{t}`" for t in sorted(by_server[server])))
-    for server, reason in sorted(ctx.tools.failed.items()):
+    for server, reason in sorted(failed.items()):
         lines.append(f"*{server}*: unavailable ({reason})")
     return "\n".join(lines) or "No tools are available right now."
 
 
 @command("status", "status", "model, token use and tool calls in this thread")
 async def _status(ctx: CommandContext) -> str:
-    u = ctx.conv.usage
-    used = ctx.conv.last_prompt_tokens
-    pct = f" ({100 * used / ctx.cfg.context_limit:.0f}% of budget)" if used else ""
-    return (
-        f"*Model* `{ctx.conv.model}` at {ctx.cfg.endpoint}\n"
-        f"*Turns* {u.turns} · *LLM calls* {u.llm_calls} · *Tool calls* {u.tool_calls}\n"
-        f"*Tokens* {u.input_tokens} in / {u.output_tokens} out · "
-        f"last request {used}{pct}\n"
-        f"*Tool notifications* {'on' if ctx.conv.tool_notifications else 'off'}"
-    )
+    s = ctx.conv.status()
+    used = s.get("last_prompt_tokens") or 0
+    limit = s.get("context_limit") or 0
+    pct = f" ({100 * used / limit:.0f}% of budget)" if used and limit else ""
+    where = f" at {s['endpoint']}" if s.get("endpoint") else ""
+    lines = [
+        f"*Model* `{s.get('model', ctx.conv.model)}`{where}",
+        f"*Turns* {s.get('turns', 0)} · *LLM calls* {s.get('llm_calls', 0)} · *Tool calls* {s.get('tool_calls', 0)}",
+        f"*Tokens* {s.get('input_tokens', 0)} in / {s.get('output_tokens', 0)} out · last request {used}{pct}",
+        f"*Tool notifications* {'on' if ctx.conv.tool_notifications else 'off'}",
+    ]
+    known = {"model", "endpoint", "turns", "llm_calls", "tool_calls", "input_tokens", "output_tokens",
+             "last_prompt_tokens", "context_limit", "tool_notifications"}
+    for k, v in s.items():
+        if k not in known and v not in (None, ""):
+            lines.append(f"*{k.replace('_', ' ').capitalize()}* {v}")
+    for name, url in ctx.conv.links().items():
+        lines.append(f"<{url}|{name}>")
+    return "\n".join(lines)
+
+
+@command("links", "links", "links about this thread (e.g. the web transcript)")
+async def _links(ctx: CommandContext) -> str:
+    links = ctx.conv.links()
+    if not links:
+        return "No links for this thread."
+    return "\n".join(f"• <{url}|{name}>" for name, url in links.items())
 
 
 @command("compact", "compact", "summarize this thread to free up context")
