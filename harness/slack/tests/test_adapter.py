@@ -16,7 +16,8 @@ def _cfg(**kw):
     base = dict(slack_bot_token="xoxb-test", slack_app_token="xapp-test", channel="home",
                 thread_followups=True, command_prefix="!", idle_timeout=10, privacy=False,
                 log_output="", endpoint="http://llm", context_limit=1000,
-                rate_user="2/10m", rate_total="3/10m", max_concurrent=2)
+                rate_user="2/10m", rate_total="3/10m", max_concurrent=2,
+                allowed_channels=[], dm_enabled=True)
     base.update(kw)
     return NS(**base)
 
@@ -114,6 +115,18 @@ def test_should_handle_rules():
         assert bot._should_handle(msg, "D0123ABCD", False, "D0123ABCD:9")
         bot.conversations["D0123ABCD:9"] = object()
         assert bot._should_handle(msg, "D0123ABCD", False, "D0123ABCD:9")
+        # --no-dm: nothing in DMs, not even mentions
+        bot.cfg.dm_enabled = False
+        assert not bot._should_handle(msg, "D0123ABCD", False, "D0123ABCD:9")
+        assert not bot._should_handle({"type": "app_mention"}, "D0123ABCD", True, "D0123ABCD:9")
+        bot.cfg.dm_enabled = True
+        # channel allowlist: mentions outside it are dropped, inside still work
+        bot.cfg.thread_followups = True
+        bot.allowed_channel_ids = {"CHOME", "COK"}
+        assert bot._should_handle({"type": "app_mention"}, "COK", True, "COK:1")
+        assert not bot._should_handle({"type": "app_mention"}, "CELSE", True, "CELSE:1")
+        assert bot._should_handle(msg, "CHOME", False, "CHOME:1")       # tracked thread, home
+        assert bot._should_handle(msg, "D0123ABCD", False, "D0123ABCD:9")  # DMs unaffected by the allowlist
     _run(case)
 
 

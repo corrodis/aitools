@@ -25,7 +25,11 @@ into `<deploy-root>/releases/<ref>/.venv`, a `current` symlink, and a
   message starts a thread, which is the conversation; replies in that
   thread continue it. Needs the `im:history` scope and the `message.im`
   event subscription (plus `im:read`/`im:write` if the app should be able
-  to open DMs itself).
+  to open DMs itself). `--no-dm` (or `MU2E_SLACK_DM=0`) ignores DMs entirely.
+- **Channel allowlist.** `--channels a,b` (or `MU2E_SLACK_CHANNELS`) limits
+  the bot to those channels (plus the home channel): mentions anywhere else
+  are dropped. Empty (default) = any channel it has been invited to. DMs are
+  governed by `--no-dm` only.
 - **One thread, one conversation.** Thread state lives in memory and is
   dropped after `--idle-timeout`. The durable artifact is the usage record,
   not the transcript.
@@ -144,6 +148,8 @@ unit's `ExecStart` is self-contained. The ones worth knowing:
 | `--channel` | — | home channel name or id |
 | `--registry` | `http://mu2eaigpvm01.fnal.gov:8000/registry` | where tools come from |
 | `--no-thread-followups` | off | require an @mention on every message |
+| `--channels` | — | allowlist of channels the bot may act in (home channel always included) |
+| `--no-dm` | off | ignore direct messages |
 | `--context-limit` | 128000 | token budget before auto-compaction |
 | `--max-tool-iterations` | 12 | hard stop on model↔tool round trips per turn |
 | `--idle-timeout` | 14400 | seconds before an inactive thread is forgotten |

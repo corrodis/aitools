@@ -65,6 +65,7 @@ class SlackBot:
         self.bot_user_id: str = ""
         self.workspace_url: str = ""
         self.home_channel_id: str = ""
+        self.allowed_channel_ids: set[str] = set()   # empty = no restriction
         self.conversations: dict[str, Conversation] = {}
         self._seen: dict[str, float] = {}
         # Brakes: per-user and global turn rates, and turns in flight. A bot
@@ -88,6 +89,16 @@ class SlackBot:
             log.info("Home channel: %s (%s)", self.cfg.channel, self.home_channel_id)
         else:
             log.info("No home channel configured -- mention-only in every channel")
+
+        allowed = list(getattr(self.cfg, "allowed_channels", []) or [])
+        if allowed:
+            ids = {await self._resolve_channel(c) for c in allowed}
+            if self.home_channel_id:
+                ids.add(self.home_channel_id)
+            self.allowed_channel_ids = ids
+            log.info("Acting only in channels: %s", ", ".join(sorted(ids)))
+        if not getattr(self.cfg, "dm_enabled", True):
+            log.info("Direct messages disabled")
 
     async def start(self) -> None:
         self.socket.socket_mode_request_listeners.append(self._on_request)
@@ -156,15 +167,18 @@ class SlackBot:
         asyncio.create_task(self._respond(event, channel, thread_ts, key, clean))
 
     def _should_handle(self, event: dict, channel: str, mentioned: bool, key: str) -> bool:
-        if mentioned:
-            return True
-        if event.get("type") != "message":
-            return False
         # Direct messages: everything is addressed to the bot. A top-level DM
         # starts a thread (the conversation); replies in it continue it. Needs
         # the im:history scope and the message.im event subscription.
         if _is_dm(channel):
+            return bool(getattr(self.cfg, "dm_enabled", True))
+        # Channel allowlist (if any): nothing outside it, mention or not.
+        if self.allowed_channel_ids and channel not in self.allowed_channel_ids:
+            return False
+        if mentioned:
             return True
+        if event.get("type") != "message":
+            return False
         if not self.cfg.thread_followups:
             return False
         # Only in the home channel, and only in a thread this process is

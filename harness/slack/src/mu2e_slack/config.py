@@ -71,6 +71,11 @@ class Config:
     # place it follows thread replies that do not mention it.
     channel: str = ""
     thread_followups: bool = True
+    # Where the bot may act at all. Empty allowlist = any channel it has been
+    # invited to (mentions only, outside the home channel). The home channel
+    # is always allowed. DMs are governed by dm_enabled only.
+    allowed_channels: list[str] = field(default_factory=list)
+    dm_enabled: bool = True
     command_prefix: str = "!"
     tool_notifications: bool = True
     # Conversations idle longer than this are dropped from memory (their usage
@@ -138,6 +143,13 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, argparse.Namespac
                    help="Home channel name or id. The bot answers mentions anywhere it has "
                         "been invited; this is the one channel where it also follows replies "
                         "in threads it is already part of.")
+    p.add_argument("--channels", default=os.environ.get("MU2E_SLACK_CHANNELS", ""),
+                   help="Comma-separated channel names or ids the bot may act in (mentions elsewhere "
+                        "are dropped). Empty = any channel it has been invited to. The home channel "
+                        "is always included.")
+    p.add_argument("--no-dm", action="store_true",
+                   help="Ignore direct messages entirely (default: DMs are answered when the app "
+                        "has the im:history scope and the message.im event).")
     p.add_argument("--no-thread-followups", action="store_true",
                    help="Require an explicit @mention on every message, including thread "
                         "replies. Strictest setting: the app then never acts on a message "
@@ -185,6 +197,8 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, argparse.Namespac
         tool_timeout=args.tool_timeout,
         channel=args.channel,
         thread_followups=not args.no_thread_followups,
+        allowed_channels=[c.strip().lstrip("#") for c in args.channels.split(",") if c.strip()],
+        dm_enabled=not args.no_dm and _env_flag("MU2E_SLACK_DM", True),
         command_prefix=args.command_prefix,
         tool_notifications=not args.no_tool_notifications,
         idle_timeout=args.idle_timeout,
