@@ -192,17 +192,19 @@ feed too; `interface` is `slack` here. Counts, timings, model, provider and
 tool names only -- no Slack user, channel, thread or content. `session_id` is
 a hash of channel and thread, so one thread stays one row.
 
-- `LOG_OUTPUT` -- jsonl file, always written (default
-  `~/.local/share/mu2e-slack-bot/log/usage.jsonl`).
-- `LOG_PG_DSN` -- also append a row to Postgres (insert-only, one row per
+- `LOG_PG_DSN` -- append a row to Postgres (insert-only, one row per
   turn; query the view `usage.sessions_current`, the latest row per session), e.g.
   `postgresql://ifdb11:5477/mu2e_ai_prd` (URI form: no spaces, so the env
   file reads the same in systemd and in `set -a; . file`), authenticated by Kerberos
   (`KRB5CCNAME` pointing at the service account's auto-renewed ticket).
-  `LOG_PG_TABLE` overrides the table. A database failure is logged and the
-  file still has the record.
+  `LOG_PG_TABLE` overrides the table. A row that cannot be written waits in
+  `pg-backlog.jsonl` next to `LOG_OUTPUT` and goes out ahead of the next row
+  that can; normally that file does not exist.
+- Without `LOG_PG_DSN` -- `LOG_OUTPUT`, a jsonl file with one line per thread
+  (default `~/.local/share/mu2e-slack-bot/log/usage.jsonl`), for local use.
 
-`--check` says whether the table exists and is writable for this account.
+`--check` says whether the table exists and is writable for this account, and
+how many rows are waiting in the backlog.
 
 ## Backends: the same Slack behaviour in front of a different agent
 

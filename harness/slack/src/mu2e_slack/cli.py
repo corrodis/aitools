@@ -55,14 +55,18 @@ async def check(cfg, backend: Backend, name: str = "mu2e-slack-bot") -> int:
             await bot.close()  # never connected to Socket Mode, but the HTTP session is open
 
     if getattr(backend, "adapter_usage_log", True):
-        print(f"\nUsage log: {cfg.log_output}")
         if cfg.pg_dsn:
-            print(f"Usage table: {cfg.pg_table} at {cfg.pg_dsn}")
+            print(f"\nUsage table: {cfg.pg_table} at {cfg.pg_dsn}")
             try:
                 print(f"  {await asyncio.to_thread(usage_log.check_postgres, cfg.pg_dsn, cfg.pg_table)}")
             except Exception as exc:  # noqa: BLE001
-                # Not fatal: the bot runs fine on the file alone.
-                print(f"  NOT WRITABLE (records go to the file only): {exc}")
+                # Not fatal: rows queue in the backlog until the table is reachable.
+                print(f"  NOT WRITABLE (rows will queue in the backlog): {exc}")
+            backlog = usage_log.backlog_path(cfg)
+            if backlog.exists():
+                print(f"  backlog: {len(usage_log._read_backlog(backlog))} row(s) waiting in {backlog}")
+        else:
+            print(f"\nUsage log: {cfg.log_output}")
     else:
         print(f"\nUsage log: written by the {backend.name} backend itself")
     return 0 if ok else 1

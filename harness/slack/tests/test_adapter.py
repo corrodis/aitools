@@ -271,19 +271,78 @@ def test_insert_is_append_only():
     assert set(params) == set(usage_log.COLUMNS)
 
 
-def test_database_failure_keeps_the_file(tmp_path, monkeypatch, caplog):
-    class Conv:
-        def usage_snapshot(self):
-            return SNAP
+class SnapConv:
+    def __init__(self, **over):
+        self.snap = {**SNAP, **over}
 
-    def boom(*a, **k):
-        raise OSError("ifdb11 unreachable")
+    def usage_snapshot(self):
+        return self.snap
 
-    monkeypatch.setattr(usage_log, "write_postgres", boom)
-    cfg = _cfg(log_output=str(tmp_path / "usage.jsonl"), pg_dsn="host=x", pg_table="usage.sessions")
-    usage_log.record_turn(Conv(), cfg, "C", "1.0")
-    assert (tmp_path / "usage.jsonl").exists()
-    assert "ifdb11 unreachable" in caplog.text
+
+class FakeDb(FakePg):
+    """FakePg plus what write_postgres uses: a context-managed connection and
+    savepoints; refuses rows whose session_id is in ``refuse``."""
+
+    def __init__(self, refuse=()):
+        super().__init__()
+        self.refuse = set(refuse)
+        self.rows = []
+
+    def transaction(self):
+        return self
+
+    def execute(self, query, params=None):
+        import psycopg
+        if params and params["session_id"] in self.refuse:
+            raise psycopg.DataError("refused")
+        self.rows.append(params)
+
+
+def _pg_cfg(tmp_path):
+    return _cfg(log_output=str(tmp_path / "usage.jsonl"), pg_dsn="host=x", pg_table="usage.sessions")
+
+
+def test_outage_queues_rows_and_next_success_sends_them_first(tmp_path, monkeypatch, caplog):
+    pytest.importorskip("psycopg")
+    cfg = _pg_cfg(tmp_path)
+    backlog = usage_log.backlog_path(cfg)
+
+    def down(dsn):
+        import psycopg
+        raise psycopg.OperationalError("ifdb11 unreachable")
+
+    monkeypatch.setattr(usage_log, "_connect", down)
+    usage_log.record_turn(SnapConv(turns=1), cfg, "C", "1.0")
+    usage_log.record_turn(SnapConv(turns=2), cfg, "C", "1.0")
+    assert len(backlog.read_text().splitlines()) == 2 and "ifdb11 unreachable" in caplog.text
+    assert not (tmp_path / "usage.jsonl").exists()  # with a DSN the file is only the backlog
+
+    db = FakeDb()
+    monkeypatch.setattr(usage_log, "_connect", lambda dsn: db)
+    usage_log.record_turn(SnapConv(turns=3), cfg, "C", "1.0")
+    assert [r["turns"] for r in db.rows] == [1, 2, 3]
+    assert not backlog.exists()
+
+
+def test_backlog_row_the_table_refuses_is_dropped_not_stuck(tmp_path, monkeypatch):
+    pytest.importorskip("psycopg")
+    cfg = _pg_cfg(tmp_path)
+    backlog = usage_log.backlog_path(cfg)
+    bad = usage_log.build_record(SNAP, "C", "bad")
+    usage_log._append_backlog(backlog, bad)
+    usage_log._append_backlog(backlog, usage_log.build_record(SNAP, "C", "ok"))
+    db = FakeDb(refuse={bad["session_id"]})
+    monkeypatch.setattr(usage_log, "_connect", lambda dsn: db)
+    usage_log.record_turn(SnapConv(), cfg, "C", "now")
+    assert len(db.rows) == 2 and not backlog.exists()
+
+
+def test_without_dsn_the_file_is_the_log(tmp_path):
+    cfg = _cfg(log_output=str(tmp_path / "usage.jsonl"))
+    usage_log.record_turn(SnapConv(turns=1), cfg, "C", "1.0")
+    usage_log.record_turn(SnapConv(turns=2), cfg, "C", "1.0")
+    lines = (tmp_path / "usage.jsonl").read_text().splitlines()
+    assert len(lines) == 1 and '"turns": 2' in lines[0]
 
 
 def test_incoming_markup_is_rendered():

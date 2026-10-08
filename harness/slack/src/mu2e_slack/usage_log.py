@@ -11,15 +11,17 @@ names only. ``session_id`` is a hash of channel and thread, so a thread's
 turns still land on one row without pointing back at it.
 
 Where it goes:
-    LOG_OUTPUT   jsonl file, always written (one line per thread, rewritten
-                 in place) -- the local record, and the fallback.
-    LOG_PG_DSN   if set, the same record is also appended to Postgres
-                 (LOG_PG_TABLE, default usage.sessions; the table is
-                 insert-only, usage.sessions_current has the latest row per
-                 session), e.g.
+    LOG_PG_DSN   set: appended to Postgres (LOG_PG_TABLE, default
+                 usage.sessions; insert-only, usage.sessions_current has the
+                 latest row per session), e.g.
                  "postgresql://ifdb11:5477/mu2e_ai_prd" with Kerberos
-                 (KRB5CCNAME) supplying the credential. A database failure is
-                 logged and never costs the user their answer.
+                 (KRB5CCNAME) supplying the credential. A row that cannot be
+                 written goes to a backlog file next to LOG_OUTPUT
+                 (pg-backlog.jsonl) and is sent ahead of the next row that
+                 can; the backlog is empty whenever the database is up.
+    otherwise    LOG_OUTPUT, a jsonl file with one line per thread rewritten
+                 in place (local development).
+A logging failure never costs the user their answer.
 """
 
 from __future__ import annotations
@@ -52,8 +54,9 @@ COLUMNS = (
 )
 
 # Up to --max-concurrent turns finish at once and each records itself from a
-# worker thread; the jsonl rewrite is read-modify-replace, so serialize it.
-_file_lock = threading.Lock()
+# worker thread; both the jsonl rewrite and the backlog drain are
+# read-modify-replace, so serialize them.
+_lock = threading.Lock()
 
 
 def session_id(channel: str, thread_ts: str) -> str:
@@ -191,12 +194,61 @@ def insert(conn, record: dict, table: str = "usage.sessions") -> None:
         cur.execute(query, params)
 
 
-def write_postgres(record: dict, dsn: str, table: str) -> None:
+def _connect(dsn: str):
     import psycopg
     # gssencmode=prefer explicitly: psycopg warns that its binary build may
     # default to disable, and Kerberos is the only credential we have.
-    with psycopg.connect(dsn, connect_timeout=10, gssencmode="prefer") as conn:
+    return psycopg.connect(dsn, connect_timeout=10, gssencmode="prefer")
+
+
+def backlog_path(cfg) -> Path:
+    return Path(cfg.log_output).with_name("pg-backlog.jsonl")
+
+
+def _read_backlog(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    rows = []
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            log.warning("Dropping unreadable usage backlog line: %.80s", line)
+    return rows
+
+
+def _append_backlog(path: Path, record: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "a") as fh:
+        fh.write(json.dumps(record, default=str) + "\n")
+
+
+def write_postgres(record: dict, dsn: str, table: str, backlog: Path) -> int:
+    """Send the backlog, then ``record``, in one transaction; on success the
+    backlog is gone. Rows are keyed by (session_id, logged_at) and inserted
+    with ON CONFLICT DO NOTHING, so re-sending one is harmless. Returns how
+    many backlog rows were cleared (sent, or dropped as refused). Raises if the database cannot be reached;
+    the caller then queues ``record`` behind the existing backlog."""
+    import psycopg
+
+    pending = _read_backlog(backlog)
+    with _connect(dsn) as conn:
+        for row in pending:
+            try:
+                with conn.transaction():  # savepoint: one bad row is not all of them
+                    insert(conn, row, table)
+            except psycopg.OperationalError:
+                raise
+            except psycopg.Error as exc:
+                log.warning("Dropping usage backlog row the table refuses (%s): %s",
+                            row.get("session_id"), exc)
         insert(conn, record, table)
+    if pending:
+        backlog.unlink(missing_ok=True)
+    return len(pending)
 
 
 def _count_query(table: str):
@@ -236,14 +288,24 @@ def record_turn(conv, cfg, channel: str, thread_ts: str) -> None:
     except Exception:
         log.exception("Failed to build usage record")
         return
-    try:
-        with _file_lock:
-            write(record, cfg.log_output)
-    except Exception:
-        log.exception("Failed to write usage record to %s", cfg.log_output)
+
     dsn = getattr(cfg, "pg_dsn", "")
-    if dsn:
+    with _lock:
+        if not dsn:
+            try:
+                write(record, cfg.log_output)
+            except Exception:
+                log.exception("Failed to write usage record to %s", cfg.log_output)
+            return
+        backlog = backlog_path(cfg)
         try:
-            write_postgres(record, dsn, cfg.pg_table)
-        except Exception as exc:  # noqa: BLE001 -- the file has it; say why the DB does not
-            log.warning("Usage record not written to Postgres (%s): %s", cfg.pg_table, exc)
+            sent = write_postgres(record, dsn, cfg.pg_table, backlog)
+            if sent:
+                log.info("Cleared %d backlogged usage row(s) into %s", sent, cfg.pg_table)
+        except Exception as exc:  # noqa: BLE001
+            try:
+                _append_backlog(backlog, record)
+                log.warning("Usage row queued in %s, Postgres unavailable: %s", backlog, exc)
+            except Exception:
+                log.exception("Usage row lost: Postgres unavailable (%s) and backlog %s unwritable",
+                              exc, backlog)
