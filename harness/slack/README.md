@@ -196,7 +196,8 @@ a hash of channel and thread, so one thread stays one row.
   `~/.local/share/mu2e-slack-bot/log/usage.jsonl`).
 - `LOG_PG_DSN` -- also append a row to Postgres (insert-only, one row per
   turn; query the view `usage.sessions_current`, the latest row per session), e.g.
-  `host=ifdb11 port=5477 dbname=mu2e_ai_prd`, authenticated by Kerberos
+  `postgresql://ifdb11:5477/mu2e_ai_prd` (URI form: no spaces, so the env
+  file reads the same in systemd and in `set -a; . file`), authenticated by Kerberos
   (`KRB5CCNAME` pointing at the service account's auto-renewed ticket).
   `LOG_PG_TABLE` overrides the table. A database failure is logged and the
   file still has the record.

@@ -17,7 +17,7 @@ Where it goes:
                  (LOG_PG_TABLE, default usage.sessions; the table is
                  insert-only, usage.sessions_current has the latest row per
                  session), e.g.
-                 "host=ifdb11 port=5477 dbname=mu2e_ai_prd" with Kerberos
+                 "postgresql://ifdb11:5477/mu2e_ai_prd" with Kerberos
                  (KRB5CCNAME) supplying the credential. A database failure is
                  logged and never costs the user their answer.
 """
