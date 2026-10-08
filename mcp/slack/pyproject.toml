@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
+
+# Version comes from the nearest git tag (setuptools_scm), not a hand-maintained
+# field here -- see ../registry/pyproject.toml's comment for why.
+[tool.setuptools_scm]
+root = "../.."
+
+[project]
+name = "slack-mcp"
+dynamic = ["version"]
+description = "Read-only MCP server for an allowlisted set of Mu2e Slack channels (list channels, read recent messages, read a thread), mikey-authenticated"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "mcp>=2.0.0",
+  "slack-sdk>=3.27.0",
+  "mikey @ git+https://github.com/Mu2e/aitools#subdirectory=mcp/mikey",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+slack-mcp = "slack_mcp.server:main"
+slack-mcp-stdio = "slack_mcp.server:main_stdio"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+script-files = ["scripts/slack-mcp.sh", "scripts/slack-mcp-install-unit.sh"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.data-files]
+"share/slack-mcp" = ["config/slack-mcp.env.example"]

@@ -1,0 +1,24 @@
+# Reference template only. `scripts/slack-mcp-install-unit.sh` renders a fully
+# resolved copy (real paths, EnvironmentFile= if you pass --env-file) into
+# this release's own share/slack-mcp/slack-mcp.service and registers it with
+# `systemctl --user link` -- prefer that over hand-editing this one.
+#
+# Requires linger enabled for this account so the service survives logout:
+#   loginctl enable-linger        # or: sudo loginctl enable-linger <user>
+
+[Unit]
+Description=slack-mcp (read-only MCP server for allowlisted Mu2e Slack channels, mikey-authenticated)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# KEY=VALUE lines: SLACK_BOT_TOKEN, SLACK_MCP_CHANNELS, MIKEY_KEYS_FILE,
+# optionally SLACK_MCP_MAX_MESSAGES. Keep this file 0600.
+EnvironmentFile=__ENV_FILE__
+ExecStart=__DEPLOY_ROOT__/current/.venv/bin/slack-mcp.sh --host=0.0.0.0 --port=8009
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
