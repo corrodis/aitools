@@ -49,7 +49,8 @@ class RegistryBackend(Backend):
     def __init__(self, cfg):
         self.cfg = cfg
         self.llm = make_llm_client(cfg)
-        self.tools = ToolRegistry(cfg.registry_url, cfg.mcp_token, cfg.tool_timeout)
+        self.tools = ToolRegistry(cfg.registry_url, cfg.mcp_token, cfg.tool_timeout,
+                                  getattr(cfg, "stdio_servers", None))
 
     async def open(self) -> None:
         await self.tools.load()
@@ -85,7 +86,9 @@ class RegistryBackend(Backend):
             ok = False
             lines.append(f"  FAILED: {exc}")
 
-        lines.append(f"MCP registry: {self.cfg.registry_url}")
+        lines.append(f"MCP registry: {self.cfg.registry_url or '(none)'}")
+        for name, argv in (getattr(self.cfg, "stdio_servers", None) or {}).items():
+            lines.append(f"stdio server {name}: {' '.join(argv)}")
         try:
             await self.tools.load()
             lines.append(f"  {len(self.tools.tools)} tool(s) from "

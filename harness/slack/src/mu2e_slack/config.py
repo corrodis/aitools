@@ -15,6 +15,8 @@ import argparse
 import os
 from dataclasses import dataclass, field
 
+from .mcp_tools import parse_stdio_servers
+
 DEFAULT_ENDPOINT = "https://vllm.fnal.gov/v1/"
 DEFAULT_MODEL = "gpt-oss:120b"
 DEFAULT_REGISTRY = "http://mu2eaigpvm01.fnal.gov:8000/registry"
@@ -64,6 +66,9 @@ class Config:
     # --- MCP -----------------------------------------------------------------
     registry_url: str = DEFAULT_REGISTRY
     tool_timeout: int = 120
+    # Local MCP servers spawned over stdio, {name: argv}; their tools sit next
+    # to the registry's, namespaced the same way (slack__slack_read_channel).
+    stdio_servers: dict[str, list[str]] = field(default_factory=dict)
 
     # --- Slack ---------------------------------------------------------------
     # Channel name ("mu2e-ai") or id ("C0123ABCD"). The bot only ever joins the
@@ -146,6 +151,11 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, argparse.Namespac
     p.add_argument("--registry", default=os.environ.get("MU2E_SLACK_REGISTRY", DEFAULT_REGISTRY),
                    help="MCP registry URL to load tools from (default: %(default)s)")
     p.add_argument("--tool-timeout", type=int, default=int(os.environ.get("MU2E_SLACK_TOOL_TIMEOUT", 120)))
+    p.add_argument("--stdio-server", action="append", metavar="NAME=COMMAND",
+                   help="Also spawn a local MCP server over stdio, e.g. slack=slack-mcp-stdio. "
+                        "Repeatable (env MU2E_SLACK_STDIO_SERVERS, ;-separated). The child sees "
+                        "only the bot's NAME_* environment variables (SLACK_* for slack) on top "
+                        "of HOME/PATH/USER.")
 
     p.add_argument("--channel", default=os.environ.get("MU2E_SLACK_CHANNEL", ""),
                    help="Home channel name or id. The bot answers mentions anywhere it has "
@@ -210,6 +220,9 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, argparse.Namespac
         max_tool_iterations=args.max_tool_iterations,
         registry_url=args.registry,
         tool_timeout=args.tool_timeout,
+        stdio_servers=parse_stdio_servers(
+            args.stdio_server if args.stdio_server is not None
+            else [s for s in os.environ.get("MU2E_SLACK_STDIO_SERVERS", "").split(";") if s.strip()]),
         channel=args.channel,
         thread_followups="none" if args.no_thread_followups else args.thread_followups,
         followup_window=max(0, args.followup_window),

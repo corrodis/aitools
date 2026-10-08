@@ -153,6 +153,8 @@ unit's `ExecStart` is self-contained. The ones worth knowing:
 | `--model` | `gpt-oss:120b` | default model (per-thread override with `!model`) |
 | `--channel` | — | home channel name or id |
 | `--registry` | `http://mu2eaigpvm01.fnal.gov:8000/registry` | where tools come from |
+| `--stdio-server` | — | `NAME=COMMAND`, repeatable: also spawn a local stdio MCP server (see below) |
+| `--tool-timeout` | 120 | seconds before a single tool call is abandoned |
 | `--thread-followups` | `asker` | who may continue a thread without a mention: `asker`, `home`, `all`, `none` |
 | `--followup-window` | 1800 | seconds after the bot's last answer during which follow-ups count (0 = no limit) |
 | `--no-thread-followups` | off | same as `--thread-followups none` |
@@ -162,6 +164,24 @@ unit's `ExecStart` is self-contained. The ones worth knowing:
 | `--max-tool-iterations` | 12 | hard stop on model↔tool round trips per turn |
 | `--idle-timeout` | 14400 | seconds before an inactive thread is forgotten |
 | `--system-prompt-file` | — | override the built-in system prompt |
+
+## Local stdio servers
+
+Tools can also come from MCP servers the bot spawns itself over stdio, next
+to the registry's: `--stdio-server slack=slack-mcp-stdio` (or
+`MU2E_SLACK_STDIO_SERVERS="slack=slack-mcp-stdio;other=..."`). Their tools are
+namespaced like the registry's (`slack__slack_read_channel`), and the process
+is spawned per call, exactly as the HTTP servers are connected per call.
+
+- A bare command is looked up in the bot's own venv first, so install the
+  server into it: `uv pip install --python <venv>/bin/python "slack-mcp @ git+<repo>@<ref>#subdirectory=mcp/slack"`.
+- The child sees mcp's safe defaults (HOME, PATH, USER, ...) plus only the
+  bot's variables prefixed with the server name: `SLACK_*` for `slack`. Put
+  its settings in the bot's env file, e.g. `SLACK_MCP_CHANNELS=mu2e-ai-test`;
+  `MIKEY_TOKEN` and `OPENAI_API_KEY` never reach it.
+- For `slack-mcp` the bot's own `SLACK_BOT_TOKEN` is reused (it needs
+  `channels:history`, `channels:read`, `users:read`, which this bot has), and
+  the bot must be in every allowlisted channel.
 
 ## Usage log
 

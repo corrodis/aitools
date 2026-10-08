@@ -12,6 +12,12 @@ underneath a running bot, no session expires while a Slack thread sits idle
 for hours, and every anyio cancel scope opens and closes inside the same task
 (long-lived streamablehttp sessions shared across asyncio tasks are the usual
 source of "attempted to exit cancel scope in a different task" crashes).
+
+Besides the registry, a server can be a local stdio command
+(``--stdio-server slack=slack-mcp-stdio``). The same per-call rule applies:
+the subprocess is spawned for one call and exits with it. That is a process
+start per call instead of an HTTP round trip -- fine at chat pace -- and
+keeps a crashed or wedged child from outliving the call that hit it.
 """
 
 from __future__ import annotations
@@ -19,7 +25,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
+import shlex
+import shutil
+import sys
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -27,6 +37,7 @@ from dataclasses import dataclass
 import aiohttp
 import httpx2
 from mcp import ClientSession
+from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamable_http_client
 
 log = logging.getLogger(__name__)
@@ -42,6 +53,8 @@ class Server:
     url: str
     description: str
     needs_token: bool
+    # Set for a local stdio server instead of url: argv of the subprocess.
+    command: list[str] | None = None
 
 
 @dataclass
@@ -51,6 +64,38 @@ class Tool:
     qualified: str
     description: str
     schema: dict
+
+
+def parse_stdio_servers(specs: list[str]) -> dict[str, list[str]]:
+    """``NAME=COMMAND [ARGS...]`` -> {name: argv}. COMMAND is split like a
+    shell would (shlex), but never run through one."""
+    servers: dict[str, list[str]] = {}
+    for spec in specs:
+        name, sep, command = spec.partition("=")
+        name, argv = name.strip(), shlex.split(command)
+        if not sep or not re.fullmatch(r"[A-Za-z0-9_-]+", name) or not argv:
+            raise ValueError(f"bad stdio server {spec!r}: expected NAME=COMMAND [ARGS...]")
+        servers[name] = argv
+    return servers
+
+
+def resolve_command(command: str) -> str:
+    """A bare command name is looked up next to this interpreter first: a tool
+    installed into the bot's own venv (``uv pip install slack-mcp``) is not on
+    the systemd unit's PATH."""
+    if os.sep in command:
+        return command
+    venv_bin = os.path.dirname(sys.executable)
+    return shutil.which(command, path=os.pathsep.join([venv_bin, os.environ.get("PATH", "")])) or command
+
+
+def stdio_env(server: str) -> dict[str, str]:
+    """What a stdio server gets from the bot's environment, on top of mcp's
+    safe defaults (HOME, PATH, USER, ...): only variables named for it
+    (``SLACK_*`` for ``slack``). Everything else -- MIKEY_TOKEN, the LLM key --
+    stays out of the child."""
+    prefix = re.sub(r"[^A-Z0-9]", "_", server.upper()) + "_"
+    return {k: v for k, v in os.environ.items() if k.startswith(prefix)}
 
 
 def _qualify(server: str, tool: str) -> str:
@@ -63,10 +108,12 @@ def _qualify(server: str, tool: str) -> str:
 class ToolRegistry:
     """Tools from every server in the MCP registry, namespaced by server."""
 
-    def __init__(self, registry_url: str, token: str = "", timeout: int = 120):
+    def __init__(self, registry_url: str, token: str = "", timeout: int = 120,
+                 stdio_servers: dict[str, list[str]] | None = None):
         self._registry_url = registry_url
         self._token = token
         self._timeout = timeout
+        self._stdio_servers = dict(stdio_servers or {})
         self.servers: dict[str, Server] = {}
         self.tools: dict[str, Tool] = {}
         self.failed: dict[str, str] = {}
@@ -79,7 +126,12 @@ class ToolRegistry:
         A server that is down is recorded in .failed and skipped: one broken
         MCP should not keep the bot off Slack entirely.
         """
-        self.servers = await self._fetch_registry()
+        self.servers = await self._fetch_registry() if self._registry_url else {}
+        for name, argv in self._stdio_servers.items():
+            if name in self.servers:
+                log.warning("stdio server %s replaces the registry entry of the same name", name)
+            self.servers[name] = Server(name=name, url="", description=f"local stdio: {shlex.join(argv)}",
+                                        needs_token=False, command=argv)
         self.tools = {}
         self.failed = {}
 
@@ -194,6 +246,15 @@ class ToolRegistry:
 
     @asynccontextmanager
     async def _session(self, server: Server):
+        if server.command:
+            params = StdioServerParameters(command=resolve_command(server.command[0]),
+                                           args=server.command[1:], env=stdio_env(server.name))
+            async with stdio_client(params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    yield session
+            return
+
         # mcp 2.x takes per-request headers only through a pre-built HTTP
         # client, so the bearer token for the gated servers (ecl, runs,
         # memory) has to be set here rather than on the transport.
