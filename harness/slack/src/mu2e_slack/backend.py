@@ -58,9 +58,10 @@ class Conversation(Protocol):
 
     def usage_snapshot(self) -> dict[str, Any] | None:
         """Fields for the harness usage record (see usage_log.build_record):
-        provider, endpoint_url, model, created_at, updated_at, turns, llm_calls,
+        endpoint_url, model, created_at, updated_at, turns, llm_calls,
         tool_calls, tool_breakdown, input_tokens, output_tokens,
-        cache_read_tokens, cache_write_tokens.  ``None`` when the backend
+        cache_read_tokens, cache_write_tokens, thinking_tokens; optionally
+        provider (default: derived from endpoint_url).  ``None`` when the backend
         writes its own usage log and the adapter should not."""
 
 

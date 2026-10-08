@@ -104,7 +104,9 @@ class Config:
 
     # --- Logging -------------------------------------------------------------
     log_output: str = ""
-    privacy: bool = False
+    # Postgres for the shared usage table; empty = jsonl file only.
+    pg_dsn: str = ""
+    pg_table: str = "usage.ai_usage"
 
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
@@ -235,7 +237,8 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, argparse.Namespac
         rate_total=args.rate_total,
         max_concurrent=max(1, args.max_concurrent),
         log_output=args.log_output,
-        privacy=_env_flag("LOG_PRIVACY", False),
+        pg_dsn=os.environ.get("LOG_PG_DSN", ""),
+        pg_table=os.environ.get("LOG_PG_TABLE", "usage.ai_usage"),
         system_prompt=system_prompt,
         slack_bot_token=os.environ.get("SLACK_BOT_TOKEN", ""),
         slack_app_token=os.environ.get("SLACK_APP_TOKEN", ""),

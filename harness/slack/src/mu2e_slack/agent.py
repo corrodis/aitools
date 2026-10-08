@@ -37,6 +37,7 @@ class Usage:
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
+    thinking_tokens: int = 0
     tool_breakdown: dict[str, int] = field(default_factory=dict)
 
     @property
@@ -184,6 +185,9 @@ class Conversation:
         details = getattr(usage, "prompt_tokens_details", None)
         if details is not None:
             self.usage.cache_read_tokens += getattr(details, "cached_tokens", 0) or 0
+        details = getattr(usage, "completion_tokens_details", None)
+        if details is not None:
+            self.usage.thinking_tokens += getattr(details, "reasoning_tokens", 0) or 0
 
     # -- context management ---------------------------------------------------
 
@@ -240,11 +244,12 @@ class Conversation:
     def usage_snapshot(self) -> dict:
         u = self.usage
         return {
-            "provider": "openai", "endpoint_url": self.cfg.endpoint, "model": self.model,
+            "endpoint_url": self.cfg.endpoint, "model": self.model,
             "created_at": self.created_at, "updated_at": self.updated_at,
             "turns": u.turns, "llm_calls": u.llm_calls, "tool_calls": u.tool_calls,
             "tool_breakdown": dict(u.tool_breakdown),
             "input_tokens": u.input_tokens, "output_tokens": u.output_tokens,
             "cache_read_tokens": u.cache_read_tokens,
-            "cache_write_tokens": 0,  # no prompt caching on the vllm/gpt-oss path
+            "cache_write_tokens": 0,  # no prompt caching requested yet
+            "thinking_tokens": u.thinking_tokens,
         }

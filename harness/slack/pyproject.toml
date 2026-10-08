@@ -21,6 +21,9 @@ dependencies = [
   # float read timeouts, and headers supplied through an httpx2 client.
   "mcp>=2.2.0",
   "httpx2>=2.5.0",
+  # Usage records into the shared Postgres table (LOG_PG_DSN); Kerberos auth
+  # through libpq, which the binary wheel bundles.
+  "psycopg[binary]>=3.1",
 ]
 
 [project.scripts]

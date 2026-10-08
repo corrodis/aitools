@@ -186,12 +186,21 @@ is spawned per call, exactly as the HTTP servers are connected per call.
 
 ## Usage log
 
-One line per thread, upserted after every turn, in the same schema and with
-the same env knobs (`LOG_OUTPUT`, `LOG_PRIVACY`, and later `LOG_PG_DSN`) as
-`../goose/log-session.py` — so both harnesses read as one dataset and the
-Postgres backend only has to be written once. Counts, timings, model and tool
-names only; no conversation content. `LOG_PRIVACY=1` drops the Slack user,
-channel and thread, and hashes the session id.
+One record per thread, rewritten after every turn, in the shape of the shared
+table `usage.ai_usage` (`../usage/ai_usage.sql`) that goose and claude-code
+feed too; `interface` is `slack` here. Counts, timings, model, provider and
+tool names only -- no Slack user, channel, thread or content. `session_id` is
+a hash of channel and thread, so one thread stays one row.
+
+- `LOG_OUTPUT` -- jsonl file, always written (default
+  `~/.local/share/mu2e-slack-bot/log/usage.jsonl`).
+- `LOG_PG_DSN` -- also upsert into Postgres, e.g.
+  `host=ifdb11 port=5477 dbname=mu2e_ai_prd`, authenticated by Kerberos
+  (`KRB5CCNAME` pointing at the service account's auto-renewed ticket).
+  `LOG_PG_TABLE` overrides the table. A database failure is logged and the
+  file still has the record.
+
+`--check` says whether the table exists and is writable for this account.
 
 ## Backends: the same Slack behaviour in front of a different agent
 

@@ -13,7 +13,7 @@ import logging
 import signal
 import sys
 
-from . import version
+from . import usage_log, version
 from .backend import Backend
 from .config import parse_args
 from .slackbot import SlackBot
@@ -55,7 +55,14 @@ async def check(cfg, backend: Backend, name: str = "mu2e-slack-bot") -> int:
             await bot.close()  # never connected to Socket Mode, but the HTTP session is open
 
     if getattr(backend, "adapter_usage_log", True):
-        print(f"\nUsage log: {cfg.log_output}{'  (privacy mode)' if cfg.privacy else ''}")
+        print(f"\nUsage log: {cfg.log_output}")
+        if cfg.pg_dsn:
+            print(f"Usage table: {cfg.pg_table} at {cfg.pg_dsn}")
+            try:
+                print(f"  {await asyncio.to_thread(usage_log.check_postgres, cfg.pg_dsn, cfg.pg_table)}")
+            except Exception as exc:  # noqa: BLE001
+                # Not fatal: the bot runs fine on the file alone.
+                print(f"  NOT WRITABLE (records go to the file only): {exc}")
     else:
         print(f"\nUsage log: written by the {backend.name} backend itself")
     return 0 if ok else 1

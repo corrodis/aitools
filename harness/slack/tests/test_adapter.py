@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from types import SimpleNamespace as NS
 
@@ -15,7 +16,7 @@ from mu2e_slack.backend import NotSupported
 def _cfg(**kw):
     base = dict(slack_bot_token="xoxb-test", slack_app_token="xapp-test", channel="home",
                 thread_followups="asker", followup_window=1800, command_prefix="!", idle_timeout=10,
-                privacy=False, log_output="", endpoint="http://llm", context_limit=1000,
+                log_output="", pg_dsn="", endpoint="http://llm", context_limit=1000,
                 rate_user="2/10m", rate_total="3/10m", max_concurrent=2,
                 allowed_channels=[], dm_enabled=True)
     base.update(kw)
@@ -218,23 +219,72 @@ def test_commands_through_protocol():
 
 def test_usage_log_skips_backends_that_log_themselves(tmp_path):
     cfg = _cfg(log_output=str(tmp_path / "usage.jsonl"))
-    usage_log.record_turn(FakeConv("k", {}), cfg, "C", "1.0", "U")
+    usage_log.record_turn(FakeConv("k", {}), cfg, "C", "1.0")
     assert not (tmp_path / "usage.jsonl").exists()
 
 
-def test_usage_record_from_snapshot(tmp_path):
+SNAP = {"endpoint_url": "https://litellm.fnal.gov/v1/", "model": "m", "created_at": "2026-10-05T00:00:00",
+        "updated_at": "2026-10-05T00:01:00", "turns": 1, "llm_calls": 2, "tool_calls": 1,
+        "tool_breakdown": {"t": 1}, "input_tokens": 10, "output_tokens": 2, "cache_read_tokens": 0,
+        "cache_write_tokens": 0, "thinking_tokens": 3}
+
+
+def test_usage_record_is_the_table_row_and_identifies_nobody(tmp_path):
     cfg = _cfg(log_output=str(tmp_path / "usage.jsonl"))
-    snap = {"provider": "openai", "endpoint_url": "http://llm", "model": "m", "created_at": "2026-10-05T00:00:00",
-            "updated_at": "2026-10-05T00:01:00", "turns": 1, "llm_calls": 2, "tool_calls": 1,
-            "tool_breakdown": {"t": 1}, "input_tokens": 10, "output_tokens": 2, "cache_read_tokens": 0,
-            "cache_write_tokens": 0}
-    rec = usage_log.build_record(snap, cfg, "C", "1.0", "U")
-    assert rec["session_id"] == "C-1.0" and rec["model"] == "m" and rec["input_tokens"] == 10
-    assert rec["user"] == "U" and rec["working_dir"] == "slack://C/1.0"
+    rec = usage_log.build_record(SNAP, "C0SECRET", "1791419757.630359")
+    assert tuple(rec) == usage_log.COLUMNS
+    assert rec["interface"] == "slack" and rec["provider"] == "litellm" and rec["thinking_tokens"] == 3
+    assert rec["session_id"].startswith("slack-")
+    assert rec["session_id"] == usage_log.build_record(SNAP, "C0SECRET", "1791419757.630359")["session_id"]
+    flat = json.dumps(rec)
+    assert "C0SECRET" not in flat and "1791419757" not in flat and "user" not in rec
     usage_log.write(rec, cfg.log_output)
     usage_log.write({**rec, "turns": 2}, cfg.log_output)
     lines = (tmp_path / "usage.jsonl").read_text().splitlines()
     assert len(lines) == 1 and '"turns": 2' in lines[0]
+
+
+class FakePg:
+    def __init__(self):
+        self.executed = []
+
+    def cursor(self):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, query, params=None):
+        self.executed.append((query.as_string(None) if hasattr(query, "as_string") else query, params))
+
+
+def test_upsert_overwrites_running_totals():
+    pytest.importorskip("psycopg")
+    conn = FakePg()
+    usage_log.upsert(conn, usage_log.build_record(SNAP, "C", "1.0"), "usage.ai_usage")
+    (query, params), = conn.executed
+    assert query.startswith('INSERT INTO "usage"."ai_usage"')
+    assert "ON CONFLICT (session_id) DO UPDATE SET" in query and '"turns" = EXCLUDED."turns"' in query
+    assert '"session_id" = EXCLUDED' not in query
+    assert set(params) == set(usage_log.COLUMNS)
+
+
+def test_database_failure_keeps_the_file(tmp_path, monkeypatch, caplog):
+    class Conv:
+        def usage_snapshot(self):
+            return SNAP
+
+    def boom(*a, **k):
+        raise OSError("ifdb11 unreachable")
+
+    monkeypatch.setattr(usage_log, "write_postgres", boom)
+    cfg = _cfg(log_output=str(tmp_path / "usage.jsonl"), pg_dsn="host=x", pg_table="usage.ai_usage")
+    usage_log.record_turn(Conv(), cfg, "C", "1.0")
+    assert (tmp_path / "usage.jsonl").exists()
+    assert "ifdb11 unreachable" in caplog.text
 
 
 def test_incoming_markup_is_rendered():

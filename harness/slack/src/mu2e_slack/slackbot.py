@@ -296,7 +296,8 @@ class SlackBot:
                     answer = await conv.ask(text, on_tool=status)
                     await status.finish()
                     await self._post(channel, thread_ts, answer)
-                usage_log.record_turn(conv, self.cfg, channel, thread_ts, user)
+                # File and database I/O: off the event loop.
+                await asyncio.to_thread(usage_log.record_turn, conv, self.cfg, channel, thread_ts)
         except Exception as exc:
             log.exception("Turn failed in %s", key)
             try:
