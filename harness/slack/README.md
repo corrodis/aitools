@@ -153,6 +153,7 @@ unit's `ExecStart` is self-contained. The ones worth knowing:
 | `--model` | `gpt-oss:120b` | default model (per-thread override with `!model`) |
 | `--channel` | — | home channel name or id |
 | `--registry` | `http://mu2eaigpvm01.fnal.gov:8000/registry` | where tools come from |
+| `--prompt-cache` | `auto` | Anthropic prompt caching: `auto` = Claude models only, `on`, `off` |
 | `--stdio-server` | — | `NAME=COMMAND`, repeatable: also spawn a local stdio MCP server (see below) |
 | `--tool-timeout` | 120 | seconds before a single tool call is abandoned |
 | `--thread-followups` | `asker` | who may continue a thread without a mention: `asker`, `home`, `all`, `none` |
@@ -164,6 +165,24 @@ unit's `ExecStart` is self-contained. The ones worth knowing:
 | `--max-tool-iterations` | 12 | hard stop on model↔tool round trips per turn |
 | `--idle-timeout` | 14400 | seconds before an inactive thread is forgotten |
 | `--system-prompt-file` | — | override the built-in system prompt |
+
+## Prompt caching
+
+Every model call resends the tool definitions (tens of thousands of tokens
+with all registry servers), the system prompt and the thread so far. For
+Claude models the bot marks three cache breakpoints, passed through LiteLLM
+as `cache_control`: the last tool (shared by every thread), the system prompt
+(stable for a thread) and the newest message (the conversation so far).
+Cached input is billed at ~0.1x, writes at 1.25x; entries live 5 minutes from
+their last use, so a turn's tool round trips and quick follow-ups hit them.
+
+For that to work nothing in the system prompt may change between calls: the
+current time is prepended to each user message (`[2026-10-07 20:45 CDT] ...`)
+instead. Markers are added to copies of the request; the stored history stays
+plain, so `!model` can switch to a non-Claude model mid-thread. `!status` and
+the usage records show `cache_read_tokens` / `cache_write_tokens`;
+`input_tokens` is the total prompt size, cached tokens included (that is how
+LiteLLM reports `prompt_tokens`).
 
 ## Local stdio servers
 

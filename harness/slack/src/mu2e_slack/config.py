@@ -66,6 +66,9 @@ class Config:
     # --- MCP -----------------------------------------------------------------
     registry_url: str = DEFAULT_REGISTRY
     tool_timeout: int = 120
+    # Anthropic prompt caching via cache_control markers: auto = for model
+    # names containing "claude", on, off.
+    prompt_cache: str = "auto"
     # Local MCP servers spawned over stdio, {name: argv}; their tools sit next
     # to the registry's, namespaced the same way (slack__slack_read_channel).
     stdio_servers: dict[str, list[str]] = field(default_factory=dict)
@@ -153,6 +156,10 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, argparse.Namespac
     p.add_argument("--registry", default=os.environ.get("MU2E_SLACK_REGISTRY", DEFAULT_REGISTRY),
                    help="MCP registry URL to load tools from (default: %(default)s)")
     p.add_argument("--tool-timeout", type=int, default=int(os.environ.get("MU2E_SLACK_TOOL_TIMEOUT", 120)))
+    p.add_argument("--prompt-cache", choices=("auto", "on", "off"),
+                   default=os.environ.get("MU2E_SLACK_PROMPT_CACHE", "auto"),
+                   help="Mark tools, system prompt and conversation for Anthropic prompt caching: "
+                        "auto = only for Claude models (default), on, off.")
     p.add_argument("--stdio-server", action="append", metavar="NAME=COMMAND",
                    help="Also spawn a local MCP server over stdio, e.g. slack=slack-mcp-stdio. "
                         "Repeatable (env MU2E_SLACK_STDIO_SERVERS, ;-separated). The child sees "
@@ -222,6 +229,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, argparse.Namespac
         max_tool_iterations=args.max_tool_iterations,
         registry_url=args.registry,
         tool_timeout=args.tool_timeout,
+        prompt_cache=args.prompt_cache,
         stdio_servers=parse_stdio_servers(
             args.stdio_server if args.stdio_server is not None
             else [s for s in os.environ.get("MU2E_SLACK_STDIO_SERVERS", "").split(";") if s.strip()]),

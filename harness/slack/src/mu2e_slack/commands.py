@@ -134,8 +134,14 @@ async def _status(ctx: CommandContext) -> str:
         f"*Tokens* {s.get('input_tokens', 0)} in / {s.get('output_tokens', 0)} out · last request {used}{pct}",
         f"*Tool notifications* {'on' if ctx.conv.tool_notifications else 'off'}",
     ]
+    read, write = s.get("cache_read_tokens"), s.get("cache_write_tokens")
+    if read or write:
+        total = s.get("input_tokens") or 0
+        share = f" ({100 * read / total:.0f}% of input)" if total and read else ""
+        lines.insert(3, f"*Prompt cache* {read or 0} read{share} / {write or 0} written")
     known = {"model", "endpoint", "turns", "llm_calls", "tool_calls", "input_tokens", "output_tokens",
-             "last_prompt_tokens", "context_limit", "tool_notifications"}
+             "last_prompt_tokens", "context_limit", "tool_notifications",
+             "cache_read_tokens", "cache_write_tokens"}
     for k, v in s.items():
         if k not in known and v not in (None, ""):
             lines.append(f"*{k.replace('_', ' ').capitalize()}* {v}")

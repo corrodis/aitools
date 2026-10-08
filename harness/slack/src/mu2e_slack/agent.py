@@ -22,6 +22,18 @@ log = logging.getLogger(__name__)
 
 COMPACT_TRIGGER = 0.8  # fraction of the context budget that forces a compaction
 
+# Anthropic prompt caching, passed through LiteLLM's OpenAI-compatible API as
+# cache_control markers. Three breakpoints (of the four allowed), in render
+# order tools -> system -> messages:
+#   1. the last tool definition -- identical for every thread and user;
+#   2. the system prompt        -- identical for the life of a thread;
+#   3. the newest message       -- the conversation so far, reused by the next
+#      model call in the same turn (one per tool round trip) and the next turn.
+# A cache hit needs a byte-identical prefix, which is why nothing in the
+# system prompt changes per request (the time of day rides on each user
+# message instead). Reads cost ~0.1x input, writes ~1.25x.
+CACHE_MARK = {"type": "ephemeral"}
+
 COMPACT_INSTRUCTION = (
     "Summarize the conversation so far for your own future reference. Keep the "
     "user's goal, every fact you established from tool calls (with document "
@@ -37,6 +49,7 @@ class Usage:
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
     thinking_tokens: int = 0
     tool_breakdown: dict[str, int] = field(default_factory=dict)
 
@@ -67,10 +80,12 @@ class Conversation:
     # -- prompt ---------------------------------------------------------------
 
     def _system_prompt(self) -> dict:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z").strip()
+        # No clock in here: anything that changes per request in the system
+        # prompt defeats prompt caching for it and everything after it. The
+        # time travels with each user message instead (see ask()).
         prefix = self.cfg.command_prefix
         extra = (
-            f"\n\nCurrent date and time: {now}."
+            f"\n\nEach user message starts with the local time it was sent, in brackets."
             f"\nThis conversation is a Slack thread; everything said in it is shared "
             f"context. Users can type {prefix}help for commands that control this "
             f"session (model, compaction, reset) -- mention that only if they ask "
@@ -84,7 +99,8 @@ class Conversation:
     async def ask(self, text: str, on_tool=None) -> str:
         """Run one user turn to completion and return the reply text."""
         self.usage.turns += 1
-        self.messages.append({"role": "user", "content": text})
+        now = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
+        self.messages.append({"role": "user", "content": f"[{now}] {text}"})
 
         # Reset per turn, not per conversation: asking the same question again
         # later is legitimate, repeating a call inside one turn is not.
@@ -108,11 +124,33 @@ class Conversation:
             f"reaching an answer. Ask me to continue, or narrow the question."
         )
 
-    async def _complete(self) -> dict:
+    def _caching(self) -> bool:
+        mode = getattr(self.cfg, "prompt_cache", "auto")
+        if mode == "auto":
+            # Only Anthropic models understand cache_control; vLLM/gpt-oss may
+            # reject the unknown field. Checked per call: !model can switch.
+            return "claude" in self.model.lower()
+        return mode == "on"
+
+    def _request(self) -> tuple[list[dict], list[dict]]:
+        """Messages and tools for one model call, with cache markers when
+        caching is on. Marks go on copies: self.messages stays plain, so the
+        history is the same whichever model reads it next."""
+        system = self._system_prompt()
+        messages = [system] + self.messages
         schemas = self.tools.schemas
+        if not self._caching():
+            return messages, schemas
+        if schemas:
+            schemas = schemas[:-1] + [{**schemas[-1], "cache_control": CACHE_MARK}]
+        messages = [_marked(system)] + self.messages[:-1] + [_marked(self.messages[-1])]
+        return messages, schemas
+
+    async def _complete(self) -> dict:
+        messages, schemas = self._request()
         response = await self.client.chat.completions.create(
             model=self.model,
-            messages=[self._system_prompt()] + self.messages,
+            messages=messages,
             tools=schemas or None,
             temperature=self.cfg.temperature,
             max_tokens=self.cfg.max_tokens,
@@ -182,9 +220,14 @@ class Conversation:
         self.last_prompt_tokens = usage.prompt_tokens or 0
         self.usage.input_tokens += usage.prompt_tokens or 0
         self.usage.output_tokens += usage.completion_tokens or 0
-        details = getattr(usage, "prompt_tokens_details", None)
-        if details is not None:
-            self.usage.cache_read_tokens += getattr(details, "cached_tokens", 0) or 0
+        # LiteLLM passes Anthropic's counters through; prompt_tokens is the
+        # total including both. Fall back to OpenAI's cached_tokens elsewhere.
+        read = getattr(usage, "cache_read_input_tokens", None)
+        if read is None:
+            details = getattr(usage, "prompt_tokens_details", None)
+            read = getattr(details, "cached_tokens", 0) if details is not None else 0
+        self.usage.cache_read_tokens += read or 0
+        self.usage.cache_write_tokens += getattr(usage, "cache_creation_input_tokens", 0) or 0
         details = getattr(usage, "completion_tokens_details", None)
         if details is not None:
             self.usage.thinking_tokens += getattr(details, "reasoning_tokens", 0) or 0
@@ -234,6 +277,7 @@ class Conversation:
             "model": self.model, "endpoint": self.cfg.endpoint,
             "turns": u.turns, "llm_calls": u.llm_calls, "tool_calls": u.tool_calls,
             "input_tokens": u.input_tokens, "output_tokens": u.output_tokens,
+            "cache_read_tokens": u.cache_read_tokens, "cache_write_tokens": u.cache_write_tokens,
             "last_prompt_tokens": self.last_prompt_tokens, "context_limit": self.cfg.context_limit,
             "tool_notifications": self.tool_notifications,
         }
@@ -250,6 +294,21 @@ class Conversation:
             "tool_breakdown": dict(u.tool_breakdown),
             "input_tokens": u.input_tokens, "output_tokens": u.output_tokens,
             "cache_read_tokens": u.cache_read_tokens,
-            "cache_write_tokens": 0,  # no prompt caching requested yet
+            "cache_write_tokens": u.cache_write_tokens,
             "thinking_tokens": u.thinking_tokens,
         }
+
+
+def _marked(message: dict) -> dict:
+    """A copy of ``message`` whose last content block carries a cache mark.
+    Plain-string content becomes a single text block; a message with no text
+    (an assistant turn that only calls tools) is returned unmarked."""
+    content = message.get("content")
+    if isinstance(content, str) and content:
+        blocks = [{"type": "text", "text": content}]
+    elif isinstance(content, list) and content:
+        blocks = list(content)
+    else:
+        return message
+    blocks[-1] = {**blocks[-1], "cache_control": CACHE_MARK}
+    return {**message, "content": blocks}
