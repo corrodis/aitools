@@ -38,10 +38,5 @@
     "port": 8007,
     "description": "Persistent project memory for agents, stored in Postgres: put_document, get_document, list_documents, list_versions, list_projects, set_metadata. Documents are private to the owner named by the caller's token.",
     "token": "yes"
-  },
-  "slack": {
-    "port": 8009,
-    "description": "Read-only MCP server for an allowlisted set of Mu2e Slack channels, e.g. #mu2e-shift (slack_list_channels, slack_read_channel, slack_read_thread).",
-    "token": "yes"
   }
 }

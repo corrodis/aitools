@@ -88,9 +88,18 @@ $deploy/current/.venv/bin/slack-mcp-install-unit.sh --port 8009 --env-file $depl
 $deploy/current/.venv/bin/python scripts/smoke_test_http.py http://127.0.0.1:8009 <mikey-token>
 ```
 
-Registry entry: port 8009, token `yes` (`../registry/config/ports.json`). It
-only shows up once the registry itself is redeployed from a ref that has it
--- deploy this server first, so the registry never lists a dead port.
+Not in the registry yet: port 8009 is this server's default, but
+`../registry/config/ports.json` deliberately has no `slack` entry, so nothing
+discovers it until we decide to publish it. To publish, deploy this server
+first, then add to `ports.json` and redeploy the registry:
+
+```json
+"slack": {
+  "port": 8009,
+  "description": "Read-only MCP server for an allowlisted set of Mu2e Slack channels (slack_list_channels, slack_read_channel, slack_read_thread).",
+  "token": "yes"
+}
+```
 
 Once it is in the registry, the Slack bot can drop its local
 `--stdio-server slack=...`: the registry's `slack` server then provides the

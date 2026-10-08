@@ -38,8 +38,8 @@ This directory contains MCP server source projects only.
 - `slack/`
   - Read-only MCP server for an allowlisted set of Slack channels
     (`#mu2e-shift`): `slack_list_channels`, `slack_read_channel`,
-    `slack_read_thread`. HTTP (port 8009, mikey) and a `slack-mcp-stdio`
-    entry point for local agents (daqpy).
+    `slack_read_thread`. HTTP (port 8009, mikey; not in the registry yet) and
+    a `slack-mcp-stdio` entry point for local agents (daqpy, the Slack bot).
   - Own install script: `slack/scripts/install.sh`
 - `code-index/` (optional)
   - Source wrapper for upstream `code-index-mcp`.
