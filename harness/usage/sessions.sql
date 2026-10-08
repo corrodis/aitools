@@ -2,14 +2,14 @@
 --
 -- Append-only, like the memory schema: a harness inserts a row after every
 -- turn holding the session's running totals so far, and never updates or
--- deletes one. usage.ai_usage_current shows the latest row per session --
+-- deletes one. usage.sessions_current shows the latest row per session --
 -- query that, not the table, or totals are counted once per turn. Counts, timings,
 -- model and tool names only: no user, no session name, no working directory,
 -- no conversation content. session_id is opaque (the Slack bot hashes its
 -- channel/thread).
 --
 -- Run once, by a member of admin_role (owner of the other schemas here):
---   psql "host=ifdb11 port=5477 dbname=mu2e_ai_prd" -f ai_usage.sql
+--   psql "host=ifdb11 port=5477 dbname=mu2e_ai_prd" -f sessions.sql
 -- Safe to re-run.
 --
 -- Writers (mu2eai, via update_role) can insert and read, nothing else --
@@ -19,7 +19,7 @@ SET ROLE admin_role;
 
 CREATE SCHEMA IF NOT EXISTS usage AUTHORIZATION admin_role;
 
-CREATE TABLE IF NOT EXISTS usage.ai_usage (
+CREATE TABLE IF NOT EXISTS usage.sessions (
     session_id          TEXT        NOT NULL,
     interface           TEXT        NOT NULL,   -- slack | goose | claude-code
     harness_version     TEXT,                   -- aitools commit of the harness
@@ -42,17 +42,17 @@ CREATE TABLE IF NOT EXISTS usage.ai_usage (
     PRIMARY KEY (session_id, logged_at)
 );
 
-CREATE INDEX IF NOT EXISTS ai_usage_interface_updated ON usage.ai_usage (interface, session_updated_at);
-CREATE INDEX IF NOT EXISTS ai_usage_model ON usage.ai_usage (model);
+CREATE INDEX IF NOT EXISTS sessions_interface_updated ON usage.sessions (interface, session_updated_at);
+CREATE INDEX IF NOT EXISTS sessions_model ON usage.sessions (model);
 
 -- One row per session: its latest totals. This is what to sum over.
-CREATE OR REPLACE VIEW usage.ai_usage_current AS
+CREATE OR REPLACE VIEW usage.sessions_current AS
     SELECT DISTINCT ON (session_id) *
-    FROM usage.ai_usage
+    FROM usage.sessions
     ORDER BY session_id, logged_at DESC;
 
 GRANT USAGE ON SCHEMA usage TO update_role;
-GRANT SELECT, INSERT ON usage.ai_usage TO update_role;
-GRANT SELECT ON usage.ai_usage_current TO update_role;
+GRANT SELECT, INSERT ON usage.sessions TO update_role;
+GRANT SELECT ON usage.sessions_current TO update_role;
 
 RESET ROLE;

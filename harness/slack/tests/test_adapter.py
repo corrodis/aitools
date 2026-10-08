@@ -264,9 +264,9 @@ class FakePg:
 def test_insert_is_append_only():
     pytest.importorskip("psycopg")
     conn = FakePg()
-    usage_log.insert(conn, usage_log.build_record(SNAP, "C", "1.0"), "usage.ai_usage")
+    usage_log.insert(conn, usage_log.build_record(SNAP, "C", "1.0"), "usage.sessions")
     (query, params), = conn.executed
-    assert query.startswith('INSERT INTO "usage"."ai_usage"')
+    assert query.startswith('INSERT INTO "usage"."sessions"')
     assert query.endswith("ON CONFLICT (session_id, logged_at) DO NOTHING") and "UPDATE" not in query
     assert set(params) == set(usage_log.COLUMNS)
 
@@ -280,7 +280,7 @@ def test_database_failure_keeps_the_file(tmp_path, monkeypatch, caplog):
         raise OSError("ifdb11 unreachable")
 
     monkeypatch.setattr(usage_log, "write_postgres", boom)
-    cfg = _cfg(log_output=str(tmp_path / "usage.jsonl"), pg_dsn="host=x", pg_table="usage.ai_usage")
+    cfg = _cfg(log_output=str(tmp_path / "usage.jsonl"), pg_dsn="host=x", pg_table="usage.sessions")
     usage_log.record_turn(Conv(), cfg, "C", "1.0")
     assert (tmp_path / "usage.jsonl").exists()
     assert "ifdb11 unreachable" in caplog.text

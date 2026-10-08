@@ -1,7 +1,7 @@
 """Per-thread usage logging.
 
 One record per Slack thread and turn, holding the thread's running totals, in
-the shape of the shared table ``usage.ai_usage`` (``harness/usage/ai_usage.sql``)
+the shape of the shared table ``usage.sessions`` (``harness/usage/sessions.sql``)
 that the goose and claude-code harnesses feed as well. ``interface`` tells
 them apart.
 
@@ -14,8 +14,8 @@ Where it goes:
     LOG_OUTPUT   jsonl file, always written (one line per thread, rewritten
                  in place) -- the local record, and the fallback.
     LOG_PG_DSN   if set, the same record is also appended to Postgres
-                 (LOG_PG_TABLE, default usage.ai_usage; the table is
-                 insert-only, usage.ai_usage_current has the latest row per
+                 (LOG_PG_TABLE, default usage.sessions; the table is
+                 insert-only, usage.sessions_current has the latest row per
                  session), e.g.
                  "host=ifdb11 port=5477 dbname=mu2e_ai_prd" with Kerberos
                  (KRB5CCNAME) supplying the credential. A database failure is
@@ -43,7 +43,7 @@ log = logging.getLogger(__name__)
 
 INTERFACE = "slack"
 
-# Column order of usage.ai_usage; also the key order of the jsonl records.
+# Column order of usage.sessions; also the key order of the jsonl records.
 COLUMNS = (
     "session_id", "interface", "harness_version", "host", "logged_at",
     "session_created_at", "session_updated_at", "provider", "endpoint_url", "model",
@@ -170,7 +170,7 @@ def _table(name: str):
     return sql.Identifier(*name.split("."))
 
 
-def insert(conn, record: dict, table: str = "usage.ai_usage") -> None:
+def insert(conn, record: dict, table: str = "usage.sessions") -> None:
     """Append one row. The table is insert-only (writers have no UPDATE), so
     a session is a series of rows of running totals; a retried write of the
     same (session_id, logged_at) is a no-op."""
@@ -215,7 +215,7 @@ def check_postgres(dsn: str, table: str) -> str:
         user, exists = cur.fetchone()
         if not exists:
             raise RuntimeError(f"connected as {user}, but {table} does not exist "
-                               "(create it with harness/usage/ai_usage.sql)")
+                               "(create it with harness/usage/sessions.sql)")
         cur.execute("SELECT has_table_privilege(%s, 'INSERT')", (table,))
         if not cur.fetchone()[0]:
             raise RuntimeError(f"connected as {user}, but it may not INSERT into {table}")

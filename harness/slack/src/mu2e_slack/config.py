@@ -106,7 +106,7 @@ class Config:
     log_output: str = ""
     # Postgres for the shared usage table; empty = jsonl file only.
     pg_dsn: str = ""
-    pg_table: str = "usage.ai_usage"
+    pg_table: str = "usage.sessions"
 
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
@@ -238,7 +238,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, argparse.Namespac
         max_concurrent=max(1, args.max_concurrent),
         log_output=args.log_output,
         pg_dsn=os.environ.get("LOG_PG_DSN", ""),
-        pg_table=os.environ.get("LOG_PG_TABLE", "usage.ai_usage"),
+        pg_table=os.environ.get("LOG_PG_TABLE", "usage.sessions"),
         system_prompt=system_prompt,
         slack_bot_token=os.environ.get("SLACK_BOT_TOKEN", ""),
         slack_app_token=os.environ.get("SLACK_APP_TOKEN", ""),
