@@ -95,7 +95,12 @@ systemctl --user link --force "$unit_file"
 systemctl --user daemon-reload
 
 if [[ $do_enable -eq 1 ]]; then
-  systemctl --user enable --now mu2e-slack-bot
+  # Enable by path, not by name: enabling the linked name makes the
+  # default.target.wants symlink point at the resolved release dir, so an
+  # upgrade that only moves <deploy-root>/current would still boot the old one.
+  systemctl --user enable --force "$unit_file"
+  systemctl --user daemon-reload
+  systemctl --user restart mu2e-slack-bot
   systemctl --user status mu2e-slack-bot --no-pager
 else
   echo "Run manually:"

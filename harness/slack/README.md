@@ -174,7 +174,8 @@ namespaced like the registry's (`slack__slack_read_channel`), and the process
 is spawned per call, exactly as the HTTP servers are connected per call.
 
 - A bare command is looked up in the bot's own venv first, so install the
-  server into it: `uv pip install --python <venv>/bin/python "slack-mcp @ git+<repo>@<ref>#subdirectory=mcp/slack"`.
+  server into it: `scripts/install.sh --with-slack-mcp <deploy-root> <ref>`
+  does that for `slack-mcp`, from the same ref.
 - The child sees mcp's safe defaults (HOME, PATH, USER, ...) plus only the
   bot's variables prefixed with the server name: `SLACK_*` for `slack`. Put
   its settings in the bot's env file, e.g. `SLACK_MCP_CHANNELS=mu2e-ai-test`;

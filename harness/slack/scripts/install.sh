@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  install.sh <deploy-root> <ref> [repo-url]
+  install.sh [--with-slack-mcp] <deploy-root> <ref> [repo-url]
 
 Installs mu2e-slack-bot into <deploy-root>/releases/<ref>/.venv using uv,
 pinned to the given git ref (tag/branch/commit) of the aitools repo, via uv's
@@ -22,6 +22,11 @@ venv:
   <...>/.venv/bin/mu2e-slack-bot-install-unit.sh (renders + links the systemd
                                                    --user unit)
   <...>/.venv/share/mu2e-slack-bot/mu2e-slack-bot.env.example
+
+--with-slack-mcp also installs mcp/slack from the same repo and ref into the
+same venv, so the bot can spawn it with --stdio-server slack=slack-mcp-stdio
+(settings: SLACK_MCP_CHANNELS in the bot's env file). It is not a service of
+its own: no port, no unit, upgraded and rolled back with the bot.
 
 <deploy-root>/current is symlinked to the new release. This script does not
 touch systemd -- run the printed install-unit command when you are ready.
@@ -43,6 +48,12 @@ Notes:
 USAGE
   exit 2
 }
+
+with_slack_mcp=0
+if [[ "${1:-}" == "--with-slack-mcp" ]]; then
+  with_slack_mcp=1
+  shift
+fi
 
 if [[ $# -lt 2 || $# -gt 3 ]]; then
   usage
@@ -67,8 +78,12 @@ echo "[1/2] Creating venv: $venv_dir"
 uv venv "$venv_dir"
 
 echo "[2/2] Installing mu2e-slack-bot from ${repo_url}@${ref} (subdirectory: harness/slack)"
-uv pip install --python "$venv_dir/bin/python" \
-  "mu2e-slack-bot @ git+${repo_url}@${ref}#subdirectory=harness/slack"
+packages=("mu2e-slack-bot @ git+${repo_url}@${ref}#subdirectory=harness/slack")
+if [[ $with_slack_mcp -eq 1 ]]; then
+  echo "      + slack-mcp from the same ref (subdirectory: mcp/slack)"
+  packages+=("slack-mcp @ git+${repo_url}@${ref}#subdirectory=mcp/slack")
+fi
+uv pip install --python "$venv_dir/bin/python" "${packages[@]}"
 
 ln -sfn "$release_dir" "$current_link"
 
