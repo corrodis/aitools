@@ -1,8 +1,9 @@
 """Per-thread usage logging.
 
-One record per Slack thread, upserted after every turn, in the shape of the
-shared table ``usage.ai_usage`` (``harness/usage/ai_usage.sql``) that the
-goose and claude-code harnesses feed as well. ``interface`` tells them apart.
+One record per Slack thread and turn, holding the thread's running totals, in
+the shape of the shared table ``usage.ai_usage`` (``harness/usage/ai_usage.sql``)
+that the goose and claude-code harnesses feed as well. ``interface`` tells
+them apart.
 
 Nothing that identifies a person or a conversation is recorded: no Slack
 user, no channel or thread, no content -- counts, timings, model and tool
@@ -12,8 +13,10 @@ turns still land on one row without pointing back at it.
 Where it goes:
     LOG_OUTPUT   jsonl file, always written (one line per thread, rewritten
                  in place) -- the local record, and the fallback.
-    LOG_PG_DSN   if set, the same record is also upserted into Postgres
-                 (LOG_PG_TABLE, default usage.ai_usage), e.g.
+    LOG_PG_DSN   if set, the same record is also appended to Postgres
+                 (LOG_PG_TABLE, default usage.ai_usage; the table is
+                 insert-only, usage.ai_usage_current has the latest row per
+                 session), e.g.
                  "host=ifdb11 port=5477 dbname=mu2e_ai_prd" with Kerberos
                  (KRB5CCNAME) supplying the credential. A database failure is
                  logged and never costs the user their answer.
@@ -90,7 +93,9 @@ def _harness_commit() -> str:
         return ""
 
 
-def _iso(value) -> str:
+def _iso(value) -> str | None:
+    if value is None:
+        return None  # a NULL in the table, not the string "None"
     return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 
@@ -165,22 +170,20 @@ def _table(name: str):
     return sql.Identifier(*name.split("."))
 
 
-def upsert(conn, record: dict, table: str = "usage.ai_usage") -> None:
-    """One row per session: insert, or overwrite every column of the existing
-    row (the record carries running totals, not increments)."""
+def insert(conn, record: dict, table: str = "usage.ai_usage") -> None:
+    """Append one row. The table is insert-only (writers have no UPDATE), so
+    a session is a series of rows of running totals; a retried write of the
+    same (session_id, logged_at) is a no-op."""
     from psycopg import sql
     from psycopg.types.json import Jsonb
 
-    cols = [c for c in COLUMNS if c != "session_id"]
     query = sql.SQL(
         "INSERT INTO {table} ({cols}) VALUES ({vals}) "
-        "ON CONFLICT (session_id) DO UPDATE SET {updates}"
+        "ON CONFLICT (session_id, logged_at) DO NOTHING"
     ).format(
         table=_table(table),
         cols=sql.SQL(", ").join(map(sql.Identifier, COLUMNS)),
         vals=sql.SQL(", ").join(sql.Placeholder(c) for c in COLUMNS),
-        updates=sql.SQL(", ").join(
-            sql.SQL("{c} = EXCLUDED.{c}").format(c=sql.Identifier(c)) for c in cols),
     )
     params = {c: record.get(c) for c in COLUMNS}
     params["tool_breakdown"] = Jsonb(params["tool_breakdown"] or {})
@@ -193,12 +196,12 @@ def write_postgres(record: dict, dsn: str, table: str) -> None:
     # gssencmode=prefer explicitly: psycopg warns that its binary build may
     # default to disable, and Kerberos is the only credential we have.
     with psycopg.connect(dsn, connect_timeout=10, gssencmode="prefer") as conn:
-        upsert(conn, record, table)
+        insert(conn, record, table)
 
 
 def _count_query(table: str):
     from psycopg import sql
-    return sql.SQL("SELECT count(*) FROM {t} WHERE interface = {i}").format(
+    return sql.SQL("SELECT count(DISTINCT session_id) FROM {t} WHERE interface = {i}").format(
         t=_table(table), i=sql.Literal(INTERFACE))
 
 
@@ -213,12 +216,11 @@ def check_postgres(dsn: str, table: str) -> str:
         if not exists:
             raise RuntimeError(f"connected as {user}, but {table} does not exist "
                                "(create it with harness/usage/ai_usage.sql)")
-        cur.execute("SELECT has_table_privilege(%s, 'INSERT') AND has_table_privilege(%s, 'UPDATE')",
-                    (table, table))
+        cur.execute("SELECT has_table_privilege(%s, 'INSERT')", (table,))
         if not cur.fetchone()[0]:
-            raise RuntimeError(f"connected as {user}, but it may not INSERT/UPDATE {table}")
+            raise RuntimeError(f"connected as {user}, but it may not INSERT into {table}")
         cur.execute(_count_query(table))
-        return f"connected as {user}; {table} writable, {cur.fetchone()[0]} slack row(s)"
+        return f"connected as {user}; {table} writable, {cur.fetchone()[0]} slack thread(s) so far"
 
 
 def record_turn(conv, cfg, channel: str, thread_ts: str) -> None:

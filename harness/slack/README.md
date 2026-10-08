@@ -186,7 +186,7 @@ is spawned per call, exactly as the HTTP servers are connected per call.
 
 ## Usage log
 
-One record per thread, rewritten after every turn, in the shape of the shared
+After every turn, the thread's running totals, in the shape of the shared
 table `usage.ai_usage` (`../usage/ai_usage.sql`) that goose and claude-code
 feed too; `interface` is `slack` here. Counts, timings, model, provider and
 tool names only -- no Slack user, channel, thread or content. `session_id` is
@@ -194,7 +194,8 @@ a hash of channel and thread, so one thread stays one row.
 
 - `LOG_OUTPUT` -- jsonl file, always written (default
   `~/.local/share/mu2e-slack-bot/log/usage.jsonl`).
-- `LOG_PG_DSN` -- also upsert into Postgres, e.g.
+- `LOG_PG_DSN` -- also append a row to Postgres (insert-only, one row per
+  turn; query the view `usage.ai_usage_current`, the latest row per session), e.g.
   `host=ifdb11 port=5477 dbname=mu2e_ai_prd`, authenticated by Kerberos
   (`KRB5CCNAME` pointing at the service account's auto-renewed ticket).
   `LOG_PG_TABLE` overrides the table. A database failure is logged and the

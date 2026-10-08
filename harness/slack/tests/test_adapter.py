@@ -261,14 +261,13 @@ class FakePg:
         self.executed.append((query.as_string(None) if hasattr(query, "as_string") else query, params))
 
 
-def test_upsert_overwrites_running_totals():
+def test_insert_is_append_only():
     pytest.importorskip("psycopg")
     conn = FakePg()
-    usage_log.upsert(conn, usage_log.build_record(SNAP, "C", "1.0"), "usage.ai_usage")
+    usage_log.insert(conn, usage_log.build_record(SNAP, "C", "1.0"), "usage.ai_usage")
     (query, params), = conn.executed
     assert query.startswith('INSERT INTO "usage"."ai_usage"')
-    assert "ON CONFLICT (session_id) DO UPDATE SET" in query and '"turns" = EXCLUDED."turns"' in query
-    assert '"session_id" = EXCLUDED' not in query
+    assert query.endswith("ON CONFLICT (session_id, logged_at) DO NOTHING") and "UPDATE" not in query
     assert set(params) == set(usage_log.COLUMNS)
 
 
