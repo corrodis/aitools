@@ -51,6 +51,11 @@ if [[ -z "$env_file" ]]; then
 elif [[ ! -f "$env_file" ]]; then
   echo "ERROR: --env-file not found: $env_file" >&2
   exit 2
+elif [[ "$(stat -c '%a' "$env_file")" != "600" ]]; then
+  # Holds a workspace-wide bot token; a world-readable copy on a shared
+  # machine hands it to every account on the host.
+  echo "ERROR: $env_file must be mode 600 (chmod 600 '$env_file')" >&2
+  exit 2
 fi
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
@@ -89,7 +94,11 @@ systemctl --user link --force "$unit_file"
 systemctl --user daemon-reload
 
 if [[ $do_enable -eq 1 ]]; then
-  systemctl --user enable --now slack-mcp
+  # Enable by path, not by name, so default.target.wants points through
+  # <deploy-root>/current rather than at one release dir.
+  systemctl --user enable --force "$unit_file"
+  systemctl --user daemon-reload
+  systemctl --user restart slack-mcp
   systemctl --user status slack-mcp --no-pager
 else
   echo "Run manually:"

@@ -71,17 +71,30 @@ python -m pytest tests                              # no network
 
 ## Server-account install
 
+On mu2eaigpvm01, as `mu2eai`, next to the other servers (uv comes from
+`mu2einit && slc uv` there):
+
 ```bash
-./scripts/install.sh /exp/mu2e/app/users/mu2epro/mcp/deploy/slack main
-deploy=/exp/mu2e/app/users/mu2epro/mcp/deploy/slack
+deploy=/exp/mu2e/app/users/mu2eai/mcp/slack
+./scripts/install.sh $deploy <ref>
 cp $deploy/current/.venv/share/slack-mcp/slack-mcp.env.example $deploy/slack-mcp.env
 $EDITOR $deploy/slack-mcp.env && chmod 600 $deploy/slack-mcp.env
+#   SLACK_BOT_TOKEN     -- the askmu2e bot token can be reused (read scopes only are used)
+#   SLACK_MCP_CHANNELS  -- the allowlist; over HTTP it is readable by every mikey holder
+#   MIKEY_KEYS_FILE=/exp/mu2e/app/users/mu2eai/mcp/mikey/keys
 set -a; . $deploy/slack-mcp.env; set +a
 $deploy/current/.venv/bin/slack-mcp.sh --check
 $deploy/current/.venv/bin/slack-mcp-install-unit.sh --port 8009 --env-file $deploy/slack-mcp.env
+$deploy/current/.venv/bin/python scripts/smoke_test_http.py http://127.0.0.1:8009 <mikey-token>
 ```
 
-Registry entry: port 8009, token `yes` (see `../registry/config/ports.json`).
+Registry entry: port 8009, token `yes` (`../registry/config/ports.json`). It
+only shows up once the registry itself is redeployed from a ref that has it
+-- deploy this server first, so the registry never lists a dead port.
+
+Once it is in the registry, the Slack bot can drop its local
+`--stdio-server slack=...`: the registry's `slack` server then provides the
+same tools (a stdio server of the same name would take precedence).
 
 ## Client config
 
